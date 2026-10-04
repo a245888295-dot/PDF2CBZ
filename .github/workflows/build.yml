@@ -18,6 +18,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Install CMake
+        run: |
+          # 安装 AI 要求的 CMake 3.30.5 版本
+          yes | sdkmanager --install "cmake;3.30.5" || true
+
       - name: Unzip Project
         run: |
           unzip -o *.zip
@@ -27,25 +32,17 @@ jobs:
 
       - name: Find Root Directory and Build
         run: |
-          # 自动寻找项目根目录
           ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
           echo "Root project found in: $ROOT_DIR"
           cd "$ROOT_DIR"
           
-          # 生成 Gradle 9.0 包装器
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
           
-          # 【暴力修复】在所有 XML 文件中搜索并替换出错的 Material 主题
-          echo "Fixing Theme errors in all XML files..."
+          # 依然保留暴力修复主题的代码，防患于未然
           find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
           find . -type f -name "*.xml" -exec sed -i 's|android:Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
           
-          # 验证一下是否还有漏网之鱼
-          echo "Checking for remaining Theme references..."
-          grep -rn "Theme.Material" . || echo "No more Theme.Material references found."
-          
-          # 开始编译
           ./gradlew assembleDebug
 
       - name: Upload APK
