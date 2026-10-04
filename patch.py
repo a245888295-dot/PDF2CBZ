@@ -74,7 +74,7 @@ object ZipStoredWriter {
 }
 '''
 
-# 5. MainActivity.kt（全功能日志监控 + 0字节防创 + SAF路径精准解耦）
+# 5. MainActivity.kt（已修复字符串转义）
 main_activity_code = '''package com.example.pdf2cbz
 
 import android.content.ClipData
@@ -89,7 +89,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -147,7 +146,6 @@ class MainActivity : ComponentActivity() {
                 var isProcessing by remember { mutableStateOf(false) }
                 val logListState = rememberLazyListState()
 
-                // 自动滚动日志到底部
                 LaunchedEffect(logs.size) {
                     if (logs.isNotEmpty()) {
                         logListState.animateScrollToItem(logs.size - 1)
@@ -213,7 +211,6 @@ class MainActivity : ComponentActivity() {
                         Text(if (isProcessing) "正在无损提取中..." else "开始提取")
                     }
 
-                    // 日志控制台 header
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -222,7 +219,7 @@ class MainActivity : ComponentActivity() {
                         Text("运行日志监控", style = MaterialTheme.typography.titleMedium)
                         TextButton(
                             onClick = {
-                                val allLogs = logs.joinToString("\n")
+                                val allLogs = logs.joinToString("\\n")
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 clipboard.setPrimaryClip(ClipData.newPlainText("PDF2CBZ Logs", allLogs))
                                 Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
@@ -232,7 +229,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // 实时日志卡片
                     Card(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
@@ -316,7 +312,6 @@ class MainActivity : ComponentActivity() {
         var filteredSmallCount = 0
 
         while (i < len - 3) {
-            // 匹配 JPEG 帧头 FF D8 FF
             if ((bytes[i].toInt() and 0xFF) == 0xFF &&
                 (bytes[i + 1].toInt() and 0xFF) == 0xD8 &&
                 (bytes[i + 2].toInt() and 0xFF) == 0xFF
@@ -325,7 +320,6 @@ class MainActivity : ComponentActivity() {
                 val start = i
                 var j = start + 2
                 while (j < len - 1) {
-                    // 匹配 JPEG 帧尾 FF D9
                     if ((bytes[j].toInt() and 0xFF) == 0xFF &&
                         (bytes[j + 1].toInt() and 0xFF) == 0xD9
                     ) {
@@ -373,7 +367,6 @@ class MainActivity : ComponentActivity() {
             appendLog("----------------------------------------")
             appendLog("开始处理 (${index + 1}/$totalPdfs): $rawName")
 
-            // 1. 先提取图片字节（零解码）
             var rawImages: List<ByteArray> = emptyList()
             try {
                 contentResolver.openInputStream(pdfUri)?.use { input ->
@@ -383,13 +376,11 @@ class MainActivity : ComponentActivity() {
                 appendLog("❌ 读取 PDF 异常: ${e.localizedMessage}")
             }
 
-            // 2. 检查：如果提取到的原图为空，绝对不创建目标文件（防生成 0 字节空壳）
             if (rawImages.isEmpty()) {
                 appendLog("⚠️ 提取失败: 未找到有效内嵌 JPEG（可能是 Flate/JP2 压缩或 PDF 1.5+ 对象流）")
                 return@forEachIndexed
             }
 
-            // 3. 确认拿到原图后再创建目标 CBZ 文件
             val targetUri = try {
                 DocumentsContract.createDocument(
                     contentResolver,
@@ -402,7 +393,6 @@ class MainActivity : ComponentActivity() {
                 null
             } ?: return@forEachIndexed
 
-            // 4. 打包写入
             try {
                 contentResolver.openOutputStream(targetUri)?.use { os ->
                     ZipOutputStream(os.buffered()).use { zipOut ->
