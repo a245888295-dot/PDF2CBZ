@@ -25,18 +25,24 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Find Project and Build
+      - name: Find Root Directory and Build
         run: |
-          # 自动寻找包含 build.gradle.kts 的文件夹
-          PROJECT_DIR=$(find . -name "build.gradle.kts" -exec dirname {} \; | head -n 1)
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Project folder not found!"
+          # 自动寻找包含 settings.gradle.kts 或 settings.gradle 的根目录
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            ROOT_DIR="."
+          else
+            ROOT_DIR=$(find . -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 | xargs dirname)
+          fi
+          
+          if [ -z "$ROOT_DIR" ]; then
+            echo "ERROR: Root project not found!"
             exit 1
           fi
-          echo "Project found in: $PROJECT_DIR"
-          cd "$PROJECT_DIR"
           
-          # 生成 gradlew 启动器 (指定稳定版本)
+          echo "Root project found in: $ROOT_DIR"
+          cd "$ROOT_DIR"
+          
+          # 在根目录生成 gradlew (已修复报错)
           gradle wrapper --gradle-version 8.7
           chmod +x gradlew
           
