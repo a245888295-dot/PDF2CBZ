@@ -43,7 +43,7 @@ jobs:
           cd "$ROOT_DIR"
           
           # 在根目录生成 gradlew (已修复报错)
-          gradle wrapper --gradle-version 8.7
+          gradle wrapper --gradle-version 9.0
           chmod +x gradlew
           
           # 开始编译
