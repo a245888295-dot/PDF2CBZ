@@ -32,24 +32,55 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Find Root Directory and Build
+      - name: Cloud Patch and Build
         run: |
+          # 1. 自动寻找项目根目录
           ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
           echo "Root project found in: $ROOT_DIR"
           cd "$ROOT_DIR"
-          
+
+          # 2. 写入一个 Python 修复脚本
+          cat << 'EOF' > patch_build.py
+          import os
+
+          # 修复 settings.gradle.kts (解决找不到 Compose 插件的问题)
+          with open('settings.gradle.kts', 'r') as f:
+              settings = f.read()
+
+          if 'org.jetbrains.kotlin.plugin.compose' not in settings:
+              insert_str = '''
+              plugins {
+                  id("org.jetbrains.kotlin.android") version "2.0.0"
+                  id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
+              }
+              '''
+              settings = settings.replace('pluginManagement {', 'pluginManagement {' + insert_str)
+              with open('settings.gradle.kts', 'w') as f:
+                  f.write(settings)
+
+          # 修复 app/build.gradle.kts (解决 Java 和 Kotlin 版本冲突)
+          with open('app/build.gradle.kts', 'r') as f:
+              app_build = f.read()
+
+          app_build = app_build.replace('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17')
+          app_build = app_build.replace('jvmTarget = "1.8"', 'jvmTarget = "17"')
+
+          if 'buildFeatures' not in app_build:
+              app_build = app_build.replace('android {', 'android {\n    buildFeatures { compose = true }')
+
+          with open('app/build.gradle.kts', 'w') as f:
+              f.write(app_build)
+          EOF
+
+          # 3. 执行云端修复脚本
+          python3 patch_build.py
+
+          # 4. 顺手修复之前那个主题报错 (以防万一)
+          find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
+
+          # 5. 生成 Gradle 启动器并开始编译
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
-          
-          # 修复主题报错
-          find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
-          find . -type f -name "*.xml" -exec sed -i 's|android:Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
-          
-          # 【最新修复】强行统一 Java 和 Kotlin 的 JVM 版本为 17
-          echo "Fixing JVM target mismatch..."
-          find . -name "build.gradle.kts" -exec sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' {} +
-          find . -name "build.gradle.kts" -exec sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' {} +
-          
           ./gradlew assembleDebug
 
       - name: Upload APK
