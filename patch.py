@@ -1,7 +1,33 @@
 import os
 
-print("🚀 正在全局重组 PDF2CBZ（仅更新 MainActivity.kt，保留原始 Gradle 配置）...")
+print("🚀 正在全局重组 PDF2CBZ（自动清洗 Gradle 报错插件 + 更新 MainActivity.kt）...")
 
+# 1. 自动清洗 build.gradle.kts 中引发报错的 compose 插件
+def clean_gradle_plugins():
+    for r, _, fs in os.walk('.'):
+        for file in fs:
+            if file.endswith('.gradle.kts'):
+                fp = os.path.join(r, file)
+                try:
+                    with open(fp, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                    
+                    # 过滤掉引发 Plugin not found 错误的这一行
+                    cleaned_lines = [
+                        line for line in lines 
+                        if 'org.jetbrains.kotlin.plugin.compose' not in line
+                    ]
+
+                    if len(cleaned_lines) != len(lines):
+                        with open(fp, 'w', encoding='utf-8') as f:
+                            f.writelines(cleaned_lines)
+                        print(f"✅ 已成功清除报错插件行: {fp}")
+                except Exception as e:
+                    print(f"⚠ 清洗 Gradle 遇到问题: {e}")
+
+clean_gradle_plugins()
+
+# 2. 写入包含无损直出与日志功能的完整 MainActivity.kt
 def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
@@ -352,6 +378,6 @@ object ZipStoredWriter {
 '''
     with open(target_file, 'w', encoding='utf-8') as f:
         f.write(clean_kotlin_code)
-    print(f"✅ 全局代码已成功更新，完美兼容原有系统依赖: {target_file}")
+    print(f"✅ 全局代码已成功更新: {target_file}")
 
 update_main_activity()
