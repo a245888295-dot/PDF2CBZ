@@ -18,7 +18,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # 使用官方标准方式安装 Android SDK 和 CMake 3.30.5
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -42,9 +41,14 @@ jobs:
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
           
-          # 保持修复主题的代码
+          # 修复主题报错
           find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
           find . -type f -name "*.xml" -exec sed -i 's|android:Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
+          
+          # 【最新修复】强行统一 Java 和 Kotlin 的 JVM 版本为 17
+          echo "Fixing JVM target mismatch..."
+          find . -name "build.gradle.kts" -exec sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' {} +
+          find . -name "build.gradle.kts" -exec sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' {} +
           
           ./gradlew assembleDebug
 
