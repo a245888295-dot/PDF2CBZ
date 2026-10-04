@@ -18,10 +18,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install CMake
-        run: |
-          # 安装 AI 要求的 CMake 3.30.5 版本
-          yes | sdkmanager --install "cmake;3.30.5" || true
+      # 使用官方标准方式安装 Android SDK 和 CMake 3.30.5
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 'latest'
+          packages: 'cmake;3.30.5'
+          accept-licenses: true
 
       - name: Unzip Project
         run: |
@@ -39,7 +42,7 @@ jobs:
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
           
-          # 依然保留暴力修复主题的代码，防患于未然
+          # 保持修复主题的代码
           find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
           find . -type f -name "*.xml" -exec sed -i 's|android:Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
           
