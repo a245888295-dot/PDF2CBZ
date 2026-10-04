@@ -27,24 +27,18 @@ jobs:
 
       - name: Find Root Directory and Build
         run: |
-          # 自动寻找包含 settings.gradle.kts 或 settings.gradle 的根目录
-          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
-            ROOT_DIR="."
-          else
-            ROOT_DIR=$(find . -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 | xargs dirname)
-          fi
-          
-          if [ -z "$ROOT_DIR" ]; then
-            echo "ERROR: Root project not found!"
-            exit 1
-          fi
-          
+          # 自动寻找包含 settings.gradle.kts 的根目录
+          ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
           echo "Root project found in: $ROOT_DIR"
           cd "$ROOT_DIR"
           
-          # 在根目录生成 gradlew (已修复报错)
+          # 在根目录生成 gradlew (确保使用 9.0 版本)
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
+          
+          # 【关键一步】自动修改 themes.xml，修复 AI 写错的代码
+          echo "Fixing themes.xml..."
+          find . -name "themes.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
           
           # 开始编译
           ./gradlew assembleDebug
