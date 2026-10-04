@@ -1,6 +1,6 @@
 import os
 
-# 1. 修复 AndroidManifest.xml（防止屏幕旋转重置 App 状态）
+# 1. 修复 AndroidManifest.xml（防屏幕旋转重置 App 状态）
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file == 'AndroidManifest.xml':
@@ -74,7 +74,7 @@ object ZipStoredWriter {
 }
 '''
 
-# 5. MainActivity.kt（新增持久化路径记忆 + 防旋转重置）
+# 5. MainActivity.kt（强制锁定输出目录，防系统跳跃干扰）
 main_activity_code = '''package com.example.pdf2cbz
 
 import android.content.Context
@@ -118,15 +118,12 @@ class MainActivity : ComponentActivity() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             outputTree = uri
-            // 持久化保存路径到本地 SharedPreferences
             saveOutputTreeUri(uri)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // 启动时自动恢复上次选择的输出路径
         restoreOutputTreeUri()
 
         setContent {
@@ -140,7 +137,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text("PDF2CBZ Direct", style = MaterialTheme.typography.headlineSmall)
-                    Text("PDF 原生图片流无损提取 · 路径自动记忆")
+                    Text("PDF 原生图片流无损提取 · 输出路径强锁定")
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -150,12 +147,31 @@ class MainActivity : ComponentActivity() {
 
                         OutlinedButton(
                             enabled = !isProcessing,
-                            onClick = { pickTree.launch(null) }
+                            onClick = { 
+                                // 传入已有的 outputTree，强行让系统弹窗定位回当前输出目录
+                                pickTree.launch(outputTree) 
+                            }
                         ) { Text("更改输出目录") }
                     }
 
                     Text("已选 PDF：${pdfs.size} 个")
-                    Text("输出路径：${outputTree ?: "未选择"}")
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "固定输出目录：",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Text(
+                                outputTree?.let { getFriendlyPath(it) } ?: "未选择（请先指定一次输出目录）",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
 
                     if (isProcessing) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
@@ -199,6 +215,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun getFriendlyPath(uri: Uri): String {
+        val decoded = Uri.decode(uri.toString())
+        return when {
+            decoded.contains("/tree/primary:") -> {
+                "内部存储/" + decoded.substringAfter("/tree/primary:")
+            }
+            decoded.contains("/tree/") -> {
+                val path = decoded.substringAfter("/tree/")
+                if (path.contains(":")) {
+                    "SD卡/" + path.substringAfter(":")
+                } else {
+                    path
+                }
+            }
+            else -> decoded
+        }
+    }
+
     private fun saveOutputTreeUri(uri: Uri) {
         val sp = getSharedPreferences("pdf2cbz_prefs", Context.MODE_PRIVATE)
         sp.edit().putString("saved_output_tree", uri.toString()).apply()
@@ -209,7 +243,6 @@ class MainActivity : ComponentActivity() {
         val uriStr = sp.getString("saved_output_tree", null) ?: return
         val uri = Uri.parse(uriStr)
 
-        // 校验 SAF 权限有效性
         val hasPermission = contentResolver.persistedUriPermissions.any {
             it.uri == uri && it.isWritePermission
         }
