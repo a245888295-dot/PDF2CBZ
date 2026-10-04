@@ -1,222 +1,51 @@
 import os
+import re
 
-print("🚀 正在执行轻量化无损渲染补丁...")
+print("🚀 开始执行自动化补丁脚本...")
 
-target_file = None
-for r, _, fs in os.walk('.'):
-    for file in fs:
-        if file == 'MainActivity.kt':
-            target_file = os.path.join(r, file)
-            break
+def find_file(filename):
+    for r, _, fs in os.walk('.'):
+        if filename in fs:
+            return os.path.join(r, filename)
+    return None
 
-if not target_file:
-    print("❌ 未找到 MainActivity.kt")
-    exit()
+# ==============================================================================
+# 📦 [旧版 - V1.0 基础重置逻辑] 
+# ==============================================================================
+main_kt_path = find_file("MainActivity.kt")
+if main_kt_path:
+    print(f"[V1.0] 找到目标文件: {main_kt_path}")
+    # 这里放基础的重置/生成逻辑...
 
-with open(target_file, 'r', encoding='utf-8') as f:
-    code = f.read()
 
-# 核心 MainActivity 完整轻量化实现（完美兼顾渲染速度与小体积）
-new_main_activity = r'''package com.example.pdf2cbz
+# ==============================================================================
+# 🔻 [新版 - V2.0 追加更新] 2026-10-05 画质与体积优化补丁
+# 注意：新追加的逻辑必须独立读取文件的最新状态
+# ==============================================================================
+if main_kt_path and os.path.exists(main_kt_path):
+    with open(main_kt_path, 'r', encoding='utf-8') as f:
+        current_code = f.read()
 
-import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Color
-import android.graphics.pdf.PdfRenderer
-import android.net.Uri
-import android.os.Bundle
-import android.provider.OpenableColumns
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
-import java.util.zip.ZipOutputStream
+    # 1. 检查是否已经打过 V2.0 补丁（防止重复执行）
+    if "// PATCH_V2_APPLIED" not in current_code:
+        print("⚡ [V2.0] 正在应用最新的画质与体积优化追加补丁...")
+        
+        # 2. 基于当前最新代码进行精准微调或追加
+        # 示例：把压缩质量从 95 调整为 90
+        if "CompressFormat.JPEG, 95" in current_code:
+            current_code = current_code.replace("CompressFormat.JPEG, 95", "CompressFormat.JPEG, 90")
+        
+        # 标记补丁已打过
+        current_code += "\n// PATCH_V2_APPLIED"
 
-class MainActivity : ComponentActivity() {
-    private val pdfs = mutableStateListOf<Uri>()
-    private var outputTree by mutableStateOf<Uri?>(null)
+        # 3. 写回文件
+        with open(main_kt_path, 'w', encoding='utf-8') as f:
+            f.write(current_code)
+        print("✅ [V2.0] 补丁追加完成！")
+    else:
+        print("ℹ️ [V2.0] 该补丁先前已应用，跳过执行。")
 
-    private val pickPdfs = registerForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        pdfs.clear()
-        pdfs.addAll(uris.filter { it.toString().isNotBlank() })
-    }
 
-    private val pickTree = registerForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            outputTree = uri
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                val scope = rememberCoroutineScope()
-                var log by remember { mutableStateOf("等待选择 PDF…") }
-                var isProcessing by remember { mutableStateOf(false) }
-
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)
-                    Text("轻量渲染 · 体积优化 · 零 NDK 依赖")
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            enabled = !isProcessing,
-                            onClick = { pickPdfs.launch(arrayOf("application/pdf")) }
-                        ) { Text("选择 PDF") }
-
-                        OutlinedButton(
-                            enabled = !isProcessing,
-                            onClick = { pickTree.launch(null) }
-                        ) { Text("输出目录") }
-                    }
-
-                    Text("已选 PDF：${pdfs.size} 个")
-                    Text("输出路径：${outputTree ?: "未选择"}")
-
-                    if (pdfs.isNotEmpty()) {
-                        LazyColumn(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(pdfs) { uri ->
-                                Text(
-                                    getFileName(uri) ?: uri.toString(),
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
-                        }
-                    } else {
-                        Spacer(Modifier.weight(1f))
-                    }
-
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = pdfs.isNotEmpty() && outputTree != null && !isProcessing,
-                        onClick = {
-                            isProcessing = true
-                            scope.launch(Dispatchers.IO) {
-                                convertPdfsToCbz { status ->
-                                    scope.launch(Dispatchers.Main) { log = status }
-                                }
-                                isProcessing = false
-                            }
-                        }
-                    ) {
-                        Text(if (isProcessing) "正在转换中..." else "开始转换")
-                    }
-
-                    Text(log)
-                }
-            }
-        }
-    }
-
-    private fun getFileName(uri: Uri): String? {
-        var name: String? = null
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (nameIndex != -1 && cursor.moveToFirst()) {
-                name = cursor.getString(nameIndex)
-            }
-        }
-        return name
-    }
-
-    private suspend fun convertPdfsToCbz(onProgress: (String) -> Unit) {
-        val targetTreeUri = outputTree ?: return
-        val docDir = DocumentFile.fromTreeUri(this, targetTreeUri) ?: run {
-            onProgress("无法访问输出目录")
-            return
-        }
-
-        val totalPdfs = pdfs.size
-        pdfs.forEachIndexed { index, pdfUri ->
-            val rawName = getFileName(pdfUri) ?: "document_$index.pdf"
-            val baseName = rawName.substringBeforeLast(".")
-            val cbzName = "$baseName.cbz"
-
-            onProgress("正在处理 (${index + 1}/$totalPdfs): $rawName")
-
-            val targetFile = docDir.createFile("application/x-cbz", cbzName)
-                ?: docDir.createFile("application/zip", cbzName)
-
-            if (targetFile == null) {
-                onProgress("创建目标文件失败: $cbzName")
-                return@forEachIndexed
-            }
-
-            try {
-                contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
-                    PdfRenderer(pfd).use { renderer ->
-                        contentResolver.openOutputStream(targetFile.uri)?.use { os ->
-                            ZipOutputStream(os.buffered()).use { zipOut ->
-                                val pageCount = renderer.pageCount
-                                for (i in 0 until pageCount) {
-                                    onProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
-
-                                    renderer.openPage(i).use { page ->
-                                        // 2 倍采样确保清晰度，同时控制内存与体积
-                                        val scale = 2
-                                        val bitmap = Bitmap.createBitmap(
-                                            page.width * scale,
-                                            page.height * scale,
-                                            Bitmap.Config.ARGB_8888
-                                        )
-                                        bitmap.eraseColor(Color.WHITE)
-                                        page.render(
-                                            bitmap,
-                                            null,
-                                            null,
-                                            PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
-                                        )
-
-                                        val stream = ByteArrayOutputStream()
-                                        // 压缩质量设为 90，完美平衡画质与文件体积膨胀问题
-                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-                                        val imageBytes = stream.toByteArray()
-                                        bitmap.recycle()
-
-                                        val entryName = String.format("%04d.jpg", i + 1)
-                                        ZipStoredWriter.addStoredBytes(zipOut, imageBytes, entryName)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                onProgress("转换失败 [$rawName]: ${e.localizedMessage}")
-                return
-            }
-        }
-        onProgress("转换完成！共成功处理 $totalPdfs 个文件。")
-    }
-}
-'''
-
-with open(target_file, 'w', encoding='utf-8') as f:
-    f.write(new_main_activity)
-
-print("✅ 成功重置并更新 MainActivity.kt 为轻量化渲染版本！")
+# ==============================================================================
+# 🔻 [未来追加 - V3.0] 以后有新需求直接在下方继续粘贴
+# ==============================================================================
