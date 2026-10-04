@@ -34,88 +34,15 @@ jobs:
 
       - name: Cloud Patch and Build
         run: |
-          # 1. 自动寻找项目根目录
           ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
           echo "Root project found in: $ROOT_DIR"
+          
+          cp patch.py "$ROOT_DIR/" || true
           cd "$ROOT_DIR"
+          python3 patch.py
 
-          # 2. 写入 Python 自动化代码精准修复脚本
-          cat << 'EOF' > patch_build.py
-          import os, re
-
-          # A. 修复 settings.gradle.kts (补充 Compose 插件)
-          if os.path.exists('settings.gradle.kts'):
-              with open('settings.gradle.kts', 'r', encoding='utf-8') as f:
-                  settings = f.read()
-
-              if 'org.jetbrains.kotlin.plugin.compose' not in settings:
-                  insert_str = '''
-                  plugins {
-                      id("org.jetbrains.kotlin.android") version "2.0.0"
-                      id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
-                  }
-                  '''
-                  settings = settings.replace('pluginManagement {', 'pluginManagement {' + insert_str)
-                  with open('settings.gradle.kts', 'w', encoding='utf-8') as f:
-                      f.write(settings)
-
-          # B. 修复 app/build.gradle.kts
-          app_gradle = 'app/build.gradle.kts'
-          if os.path.exists(app_gradle):
-              with open(app_gradle, 'r', encoding='utf-8') as f:
-                  app_build = f.read()
-
-              app_build = app_build.replace('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17')
-              app_build = app_build.replace('jvmTarget = "1.8"', 'jvmTarget = "17"')
-
-              if 'buildFeatures' not in app_build:
-                  app_build = app_build.replace('android {', 'android {\n    buildFeatures { compose = true }')
-
-              with open(app_gradle, 'w', encoding='utf-8') as f:
-                  f.write(app_build)
-
-          # C. 精准修复 Kotlin 代码文件
-          for root, _, files in os.walk('.'):
-              for file in files:
-                  filepath = os.path.join(root, file)
-
-                  # 1. 修复 MainActivity.kt（将 setContent 导入正确插入到 package 之后）
-                  if file == 'MainActivity.kt':
-                      with open(filepath, 'r', encoding='utf-8') as f:
-                          code = f.read()
-                      if 'import androidx.activity.compose.setContent' not in code:
-                          code = re.sub(
-                              r'(package\s+[a-zA-Z0-9_.]+)',
-                              r'\1\nimport androidx.activity.compose.setContent',
-                              code,
-                              count=1
-                          )
-                          with open(filepath, 'w', encoding='utf-8') as f:
-                              f.write(code)
-                          print("Successfully patched MainActivity.kt")
-
-                  # 2. 修复 ZipStoredWriter.kt（直接注释掉错误的 crc 重赋值行）
-                  if file == 'ZipStoredWriter.kt':
-                      with open(filepath, 'r', encoding='utf-8') as f:
-                          lines = f.readlines()
-                      new_lines = []
-                      for line in lines:
-                          if 'crc =' in line or 'crc=' in line:
-                              if 'CRC32()' not in line:
-                                  line = '// ' + line  # 注释掉非创架行的错误赋值
-                          new_lines.append(line)
-                      with open(filepath, 'w', encoding='utf-8') as f:
-                          f.writelines(new_lines)
-                      print("Successfully patched ZipStoredWriter.kt")
-          EOF
-
-          # 3. 执行云端修补脚本
-          python3 patch_build.py
-
-          # 4. 修复 Theme 素材样式引用报错
           find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
 
-          # 5. 生成 Wrapper 并打包
           gradle wrapper --gradle-version 8.9
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
