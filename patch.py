@@ -1,42 +1,8 @@
 import os
-import re
 
-print("🚀 正在全局重组并修复 PDF2CBZ（集成无损直出 + 日志调试 + 智能双引擎）...")
+print("🚀 正在全局重组 PDF2CBZ（仅更新 MainActivity.kt，保留原始 Gradle 配置）...")
 
-# 1. 修复 build.gradle.kts 依赖
-def fix_gradle_config():
-    for r, _, fs in os.walk('.'):
-        for file in fs:
-            if file == 'build.gradle.kts' and 'app' in r:
-                fp = os.path.join(r, file)
-                with open(fp, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                deps_to_add = [
-                    'implementation("androidx.activity:activity-compose:1.9.0")',
-                    'implementation("androidx.documentfile:documentfile:1.0.1")',
-                    'implementation("androidx.compose.material3:material3:1.2.1")',
-                    'implementation("androidx.compose.ui:ui:1.6.8")'
-                ]
-                
-                needed_deps = [dep for dep in deps_to_add if dep.split('"')[1].split(':')[1] not in content]
-                
-                if needed_deps:
-                    deps_block = "\n    ".join(needed_deps)
-                    if 'dependencies {' in content:
-                        content = content.replace('dependencies {', f'dependencies {{\n    {deps_block}')
-                    else:
-                        content += f'\ndependencies {{\n    {deps_block}\n}}'
-
-                with open(fp, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                print(f"✅ 已成功修复 Gradle 依赖: {fp}")
-                return
-
-fix_gradle_config()
-
-# 2. 全量写入无语法瑕疵的完整 MainActivity.kt
-def update_main_activity_clean():
+def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
         for file in fs:
@@ -386,6 +352,6 @@ object ZipStoredWriter {
 '''
     with open(target_file, 'w', encoding='utf-8') as f:
         f.write(clean_kotlin_code)
-    print(f"✅ 全局代码已成功更新，完美包含无损直出+日志调试功能: {target_file}")
+    print(f"✅ 全局代码已成功更新，完美兼容原有系统依赖: {target_file}")
 
-update_main_activity_clean()
+update_main_activity()
