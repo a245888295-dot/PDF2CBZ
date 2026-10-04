@@ -95,7 +95,7 @@ object ZipStoredWriter {
 }
 '''
 
-# 4. 覆盖写入完整的 MainActivity.kt
+# 4. 覆盖写入完整的 MainActivity.kt (升级为 300 DPI 动态渲染)
 main_activity_code = '''package com.example.pdf2cbz
 
 import android.content.Intent
@@ -157,7 +157,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)
-                    Text("原生渲染 · ZIP 无压缩 · 零依赖")
+                    Text("原生 300 DPI 渲染 · ZIP 无压缩 · 高保真底图")
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -274,10 +274,16 @@ class MainActivity : ComponentActivity() {
                                     onProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
 
                                     renderer.openPage(i).use { page ->
-                                        val scale = 2
+                                        // 设置渲染为 300 DPI (还原漫画原生 1126x1600 高清分辨率)
+                                        val targetDpi = 300f
+                                        val scale = targetDpi / 72f
+
+                                        val bitmapWidth = (page.width * scale).toInt()
+                                        val bitmapHeight = (page.height * scale).toInt()
+
                                         val bitmap = Bitmap.createBitmap(
-                                            page.width * scale,
-                                            page.height * scale,
+                                            bitmapWidth,
+                                            bitmapHeight,
                                             Bitmap.Config.ARGB_8888
                                         )
                                         bitmap.eraseColor(Color.WHITE)
@@ -289,7 +295,8 @@ class MainActivity : ComponentActivity() {
                                         )
 
                                         val stream = ByteArrayOutputStream()
-                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)
+                                        // 压缩质量设为 95% (极高保真)
+                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
                                         val imageBytes = stream.toByteArray()
                                         bitmap.recycle()
 
