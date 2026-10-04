@@ -14,7 +14,7 @@ for r, _, fs in os.walk('.'):
                     )
                     f.seek(0); f.write(c); f.truncate()
 
-# 2. 修复 app/build.gradle.kts (注入 DocumentFile & Compose 依赖)
+# 2. 修复 app/build.gradle.kts
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file in ['build.gradle.kts', 'build.gradle'] and 'app' in r:
@@ -35,50 +35,14 @@ for r, _, fs in os.walk('.'):
                         c = c.replace('dependencies {', 'dependencies {\n    implementation("androidx.documentfile:documentfile:1.0.1")')
                 f.seek(0); f.write(c); f.truncate()
 
-# 3. 覆盖写入完整的 ZipStoredWriter.kt
+# 3. ZipStoredWriter.kt (只打包不压二次压缩，保留原体积)
 zip_writer_code = '''package com.example.pdf2cbz
 
-import java.io.BufferedInputStream
-import java.io.File
-import java.io.FileInputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object ZipStoredWriter {
-    fun addStoredFile(zip: ZipOutputStream, file: File, name: String) {
-        val crc = CRC32()
-        var size = 0L
-
-        BufferedInputStream(FileInputStream(file)).use { input ->
-            val buffer = ByteArray(1024 * 1024)
-            while (true) {
-                val n = input.read(buffer)
-                if (n <= 0) break
-                crc.update(buffer, 0, n)
-                size += n
-            }
-        }
-
-        val entry = ZipEntry(name).apply {
-            method = ZipEntry.STORED
-            this.size = size
-            this.compressedSize = size
-            this.crc = crc.value
-        }
-
-        zip.putNextEntry(entry)
-        BufferedInputStream(FileInputStream(file)).use { input ->
-            val buffer = ByteArray(1024 * 1024)
-            while (true) {
-                val n = input.read(buffer)
-                if (n <= 0) break
-                zip.write(buffer, 0, n)
-            }
-        }
-        zip.closeEntry()
-    }
-
     fun addStoredBytes(zip: ZipOutputStream, bytes: ByteArray, name: String) {
         val crc = CRC32().apply { update(bytes, 0, bytes.size) }
         val entry = ZipEntry(name).apply {
@@ -95,13 +59,10 @@ object ZipStoredWriter {
 }
 '''
 
-# 4. 覆盖写入完整的 MainActivity.kt (升级为 300 DPI 动态渲染)
+# 4. MainActivity.kt (100% 字节级直通剥离)
 main_activity_code = '''package com.example.pdf2cbz
 
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Color
-import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -118,7 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.zip.ZipOutputStream
 
 class MainActivity : ComponentActivity() {
@@ -156,8 +117,8 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)
-                    Text("原生 300 DPI 渲染 · ZIP 无压缩 · 高保真底图")
+                    Text("PDF2CBZ Direct", style = MaterialTheme.typography.headlineSmall)
+                    Text("PDF 原生图片流无损直通抽取")
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -207,7 +168,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     ) {
-                        Text(if (isProcessing) "正在转换中..." else "开始转换")
+                        Text(if (isProcessing) "正在无损提取中..." else "开始提取")
                     }
 
                     Text(log)
@@ -227,9 +188,47 @@ class MainActivity : ComponentActivity() {
         return name
     }
 
+    // 从 PDF 二进制字节流中，逐个读取原始图片（零解码、零失真）
+    private fun extractRawImages(inputStream: InputStream): List<ByteArray> {
+        val bytes = inputStream.readBytes()
+        val images = mutableListOf<ByteArray>()
+        var i = 0
+        val len = bytes.size
+
+        while (i < len - 3) {
+            // 匹配 JPEG 头 FF D8 FF
+            if ((bytes[i].toInt() and 0xFF) == 0xFF &&
+                (bytes[i + 1].toInt() and 0xFF) == 0xD8 &&
+                (bytes[i + 2].toInt() and 0xFF) == 0xFF
+            ) {
+                val start = i
+                var j = start + 2
+                while (j < len - 1) {
+                    // 匹配 JPEG 尾 FF D9
+                    if ((bytes[j].toInt() and 0xFF) == 0xFF &&
+                        (bytes[j + 1].toInt() and 0xFF) == 0xD9
+                    ) {
+                        val end = j + 2
+                        // 过滤掉小于 30KB 的矢量微型图标或杂小元素
+                        if (end - start > 30 * 1024) {
+                            images.add(bytes.copyOfRange(start, end))
+                            i = end
+                            break
+                        }
+                    }
+                    j++
+                }
+                if (j >= len - 1) i++
+            } else {
+                i++
+            }
+        }
+        return images
+    }
+
     private suspend fun convertPdfsToCbz(onProgress: (String) -> Unit) {
         val targetTreeUri = outputTree ?: return
-        
+
         val parentDocUri = try {
             DocumentsContract.buildDocumentUriUsingTree(
                 targetTreeUri,
@@ -246,7 +245,7 @@ class MainActivity : ComponentActivity() {
             val baseName = rawName.substringBeforeLast(".")
             val cbzName = "$baseName.cbz"
 
-            onProgress("正在处理 (${index + 1}/$totalPdfs): $rawName")
+            onProgress("正在无损剥离 (${index + 1}/$totalPdfs): $rawName")
 
             val targetUri = try {
                 DocumentsContract.createDocument(
@@ -260,60 +259,35 @@ class MainActivity : ComponentActivity() {
             }
 
             if (targetUri == null) {
-                onProgress("创建目标文件失败: $cbzName")
+                onProgress("创建文件失败: $cbzName")
                 return@forEachIndexed
             }
 
             try {
-                contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
-                    PdfRenderer(pfd).use { renderer ->
-                        contentResolver.openOutputStream(targetUri)?.use { os ->
-                            ZipOutputStream(os.buffered()).use { zipOut ->
-                                val pageCount = renderer.pageCount
-                                for (i in 0 until pageCount) {
-                                    onProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
+                var rawImages: List<ByteArray> = emptyList()
+                contentResolver.openInputStream(pdfUri)?.use { input ->
+                    rawImages = extractRawImages(input)
+                }
 
-                                    renderer.openPage(i).use { page ->
-                                        // 设置渲染为 300 DPI (还原漫画原生 1126x1600 高清分辨率)
-                                        val targetDpi = 300f
-                                        val scale = targetDpi / 72f
-
-                                        val bitmapWidth = (page.width * scale).toInt()
-                                        val bitmapHeight = (page.height * scale).toInt()
-
-                                        val bitmap = Bitmap.createBitmap(
-                                            bitmapWidth,
-                                            bitmapHeight,
-                                            Bitmap.Config.ARGB_8888
-                                        )
-                                        bitmap.eraseColor(Color.WHITE)
-                                        page.render(
-                                            bitmap,
-                                            null,
-                                            null,
-                                            PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
-                                        )
-
-                                        val stream = ByteArrayOutputStream()
-                                        // 压缩质量设为 95% (极高保真)
-                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
-                                        val imageBytes = stream.toByteArray()
-                                        bitmap.recycle()
-
-                                        val entryName = String.format("%04d.jpg", i + 1)
-                                        ZipStoredWriter.addStoredBytes(zipOut, imageBytes, entryName)
-                                    }
-                                }
+                if (rawImages.isNotEmpty()) {
+                    contentResolver.openOutputStream(targetUri)?.use { os ->
+                        ZipOutputStream(os.buffered()).use { zipOut ->
+                            rawImages.forEachIndexed { imgIdx, imgBytes ->
+                                val entryName = String.format("%04d.jpg", imgIdx + 1)
+                                ZipStoredWriter.addStoredBytes(zipOut, imgBytes, entryName)
                             }
                         }
                     }
+                    onProgress("成功提取 ${rawImages.size} 页原图 ($cbzName)")
+                } else {
+                    onProgress("未在 $rawName 中找到有效内嵌原图")
                 }
             } catch (e: Exception) {
-                onProgress("转换失败 [$rawName]: ${e.localizedMessage}")
+                onProgress("处理失败 [$rawName]: ${e.localizedMessage}")
                 return@forEachIndexed
             }
         }
-        onProgress("转换完成！共成功处理 $totalPdfs 个文件。")
+        onProgress("全部完成！已无损提取 $totalPdfs 个文件。")
     }
 }
 '''
