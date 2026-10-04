@@ -1,38 +1,81 @@
 import os
 import re
 
-print("🚀 正在应用模块化自动化补丁...")
+print("🚀 正在检测 Kotlin 版本并自动修复 Compose 编译器插件...")
 
 # ==============================================================================
-# 📦 [V1.0] 自动修复 app/build.gradle.kts 中的 Compose 插件报错
+# 📦 [V1.0] 自动提取 Kotlin 版本并补全 org.jetbrains.kotlin.plugin.compose 声明
 # ==============================================================================
+def get_kotlin_version():
+    kotlin_ver = None
+    
+    # 1. 优先从 libs.versions.toml 提取
+    for r, _, fs in os.walk('.'):
+        for f in fs:
+            if f == 'libs.versions.toml':
+                try:
+                    with open(os.path.join(r, f), 'r', encoding='utf-8') as file:
+                        content = file.read()
+                        m = re.search(r'kotlin\s*=\s*["\']([^"\']+)["\']', content)
+                        if m:
+                            kotlin_ver = m.group(1)
+                            print(f"🔍 [Kotlin 检测] 从 libs.versions.toml 找到版本: {kotlin_ver}")
+                except Exception:
+                    pass
+
+    # 2. 兜底从 build.gradle / build.gradle.kts 提取
+    if not kotlin_ver:
+        for r, _, fs in os.walk('.'):
+            for f in fs:
+                if 'build.gradle' in f:
+                    try:
+                        with open(os.path.join(r, f), 'r', encoding='utf-8') as file:
+                            content = file.read()
+                            m = re.search(r'org\.jetbrains\.kotlin\.android["\']?\s*\)?\s*version\s*["\']([^"\']+)["\']', content)
+                            if m:
+                                kotlin_ver = m.group(1)
+                                print(f"🔍 [Kotlin 检测] 从 {f} 找到版本: {kotlin_ver}")
+                                break
+                    except Exception:
+                        pass
+
+    if not kotlin_ver:
+        kotlin_ver = "2.0.0"
+        print(f"⚠️ [Kotlin 检测] 未检索到明确版本，使用默认基线版本: {kotlin_ver}")
+        
+    return kotlin_ver
+
 def fix_gradle_config():
+    kotlin_ver = get_kotlin_version()
+    compose_plugin_str = f'id("org.jetbrains.kotlin.plugin.compose") version "{kotlin_ver}"'
+    
     for r, _, fs in os.walk('.'):
         for file in fs:
             if file == 'build.gradle.kts' and 'app' in r:
                 fp = os.path.join(r, file)
                 with open(fp, 'r', encoding='utf-8') as f:
                     content = f.read()
-                new_content = re.sub(r'id\s*\(\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*\)', '', content)
+                
+                if 'org.jetbrains.kotlin.plugin.compose' in content:
+                    # 替换无版本或旧格式声明
+                    new_content = re.sub(
+                        r'id\s*\(\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*\)(\s*version\s*["\'][^"\']+["\'])?',
+                        compose_plugin_str,
+                        content
+                    )
+                else:
+                    # 自动插入到 plugins { ... } 头部
+                    if 'plugins {' in content:
+                        new_content = content.replace('plugins {', f'plugins {{\n    {compose_plugin_str}')
+                    else:
+                        new_content = compose_plugin_str + '\n' + content
+                
                 with open(fp, 'w', encoding='utf-8') as f:
                     f.write(new_content)
-                print(f"✅ [V1.0] 已成功修复 Gradle 依赖文件: {fp}")
+                print(f"✅ [V1.0] 已成功配置 Compose 插件版本 ({kotlin_ver}): {fp}")
                 return
-    
-    # 兜底查找
-    for r, _, fs in os.walk('.'):
-        for file in fs:
-            if file == 'build.gradle.kts':
-                fp = os.path.join(r, file)
-                with open(fp, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                if 'org.jetbrains.kotlin.plugin.compose' in content:
-                    new_content = re.sub(r'id\s*\(\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*\)', '', content)
-                    with open(fp, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
-                    print(f"✅ [V1.0] 已成功修复 Gradle 依赖文件: {fp}")
 
-# 执行 V1.0 修复
+# 执行 Gradle 依赖修复
 fix_gradle_config()
 
 
@@ -251,15 +294,14 @@ class MainActivity : ComponentActivity() {
         f.write(new_main_activity)
     print(f"✅ [V2.0] 已成功更新逻辑文件: {target_file}")
 
-# 执行 V2.0 修复
+# 执行 V2.0 逻辑
 update_main_activity()
 
 
 # ==============================================================================
-# 🔻🔻🔻 [V3.0 下次更新区域 - 变量已隔离，可在此直接追加新函数/新逻辑] 🔻🔻🔻
+# 🔻🔻🔻 [V3.0 下次更新区域 - 变量隔离，直接在此追加新代码] 🔻🔻🔻
 # ==============================================================================
 def patch_v3_future():
-    # 以后有新的追加需求，直接写在这个函数里并调用，完全不用担心与上面 V1/V2 的变量混淆！
     pass
 
 patch_v3_future()
