@@ -1,48 +1,41 @@
 import os
 import re
 
-print("🚀 正在检测 Kotlin 版本并自动修复 Compose 编译器插件...")
+print("🚀 正在自动补全 Gradle 缺失依赖并修复编译问题...")
 
 # ==============================================================================
-# 📦 [V1.0] 自动提取 Kotlin 版本并补全 org.jetbrains.kotlin.plugin.compose 声明
+# 📦 [V1.0] 自动提取 Kotlin 版本并补全 Compose 与 DocumentFile 库依赖
 # ==============================================================================
 def get_kotlin_version():
     kotlin_ver = None
-    
-    # 1. 优先从 libs.versions.toml 提取
     for r, _, fs in os.walk('.'):
         for f in fs:
             if f == 'libs.versions.toml':
                 try:
                     with open(os.path.join(r, f), 'r', encoding='utf-8') as file:
-                        content = file.read()
-                        m = re.search(r'kotlin\s*=\s*["\']([^"\']+)["\']', content)
+                        m = re.search(r'kotlin\s*=\s*["\']([^"\']+)["\']', file.read())
                         if m:
                             kotlin_ver = m.group(1)
-                            print(f"🔍 [Kotlin 检测] 从 libs.versions.toml 找到版本: {kotlin_ver}")
                 except Exception:
                     pass
 
-    # 2. 兜底从 build.gradle / build.gradle.kts 提取
     if not kotlin_ver:
         for r, _, fs in os.walk('.'):
             for f in fs:
                 if 'build.gradle' in f:
                     try:
                         with open(os.path.join(r, f), 'r', encoding='utf-8') as file:
-                            content = file.read()
-                            m = re.search(r'org\.jetbrains\.kotlin\.android["\']?\s*\)?\s*version\s*["\']([^"\']+)["\']', content)
+                            m = re.search(r'org\.jetbrains\.kotlin\.android["\']?\s*\)?\s*version\s*["\']([^"\']+)["\']', file.read())
                             if m:
                                 kotlin_ver = m.group(1)
-                                print(f"🔍 [Kotlin 检测] 从 {f} 找到版本: {kotlin_ver}")
                                 break
                     except Exception:
                         pass
 
     if not kotlin_ver:
         kotlin_ver = "2.0.0"
-        print(f"⚠️ [Kotlin 检测] 未检索到明确版本，使用默认基线版本: {kotlin_ver}")
         
+    print(f"🔍 [Kotlin 检测] 当前确定版本为: {kotlin_ver}")
     return kotlin_ver
 
 def fix_gradle_config():
@@ -56,26 +49,53 @@ def fix_gradle_config():
                 with open(fp, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
+                # 1. 确保 Compose 插件版本
                 if 'org.jetbrains.kotlin.plugin.compose' in content:
-                    # 替换无版本或旧格式声明
-                    new_content = re.sub(
+                    content = re.sub(
                         r'id\s*\(\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*\)(\s*version\s*["\'][^"\']+["\'])?',
                         compose_plugin_str,
                         content
                     )
                 else:
-                    # 自动插入到 plugins { ... } 头部
                     if 'plugins {' in content:
-                        new_content = content.replace('plugins {', f'plugins {{\n    {compose_plugin_str}')
+                        content = content.replace('plugins {', f'plugins {{\n    {compose_plugin_str}')
                     else:
-                        new_content = compose_plugin_str + '\n' + content
+                        content = compose_plugin_str + '\n' + content
+
+                # 2. 确保开启 compose 支持
+                if 'buildFeatures' not in content:
+                    if 'android {' in content:
+                        content = content.replace('android {', 'android {\n    buildFeatures {\n        compose = true\n    }')
+                elif 'compose' not in content:
+                    content = content.replace('buildFeatures {', 'buildFeatures {\n        compose = true')
+
+                # 3. 自动注入报错缺失的关键依赖项
+                deps_to_add = [
+                    'implementation("androidx.activity:activity-compose:1.9.0")',
+                    'implementation("androidx.documentfile:documentfile:1.0.1")',
+                    'implementation("androidx.compose.material3:material3:1.2.1")',
+                    'implementation("androidx.compose.ui:ui:1.6.8")'
+                ]
                 
+                needed_deps = []
+                for dep in deps_to_add:
+                    pkg_key = dep.split('"')[1].split(':')[1]
+                    if pkg_key not in content:
+                        needed_deps.append(dep)
+                
+                if needed_deps:
+                    deps_block = "\n    ".join(needed_deps)
+                    if 'dependencies {' in content:
+                        content = content.replace('dependencies {', f'dependencies {{\n    {deps_block}')
+                    else:
+                        content += f'\ndependencies {{\n    {deps_block}\n}}'
+
                 with open(fp, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                print(f"✅ [V1.0] 已成功配置 Compose 插件版本 ({kotlin_ver}): {fp}")
+                    f.write(content)
+                print(f"✅ [V1.0] 已成功修复依赖并补全库支持: {fp}")
                 return
 
-# 执行 Gradle 依赖修复
+# 执行 Gradle 依赖补全
 fix_gradle_config()
 
 
@@ -299,7 +319,7 @@ update_main_activity()
 
 
 # ==============================================================================
-# 🔻🔻🔻 [V3.0 下次更新区域 - 变量隔离，直接在此追加新代码] 🔻🔻🔻
+# 🔻🔻🔻 [V3.0 下次更新区域 - 变量隔离，可在此直接追加新代码] 🔻🔻🔻
 # ==============================================================================
 def patch_v3_future():
     pass
