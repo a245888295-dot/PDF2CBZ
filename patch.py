@@ -1,6 +1,21 @@
 import os
 
-# 1. 修复 settings.gradle.kts
+# 1. 修复 AndroidManifest.xml（防止屏幕旋转重置 App 状态）
+for r, _, fs in os.walk('.'):
+    for file in fs:
+        if file == 'AndroidManifest.xml':
+            p = os.path.join(r, file)
+            with open(p, 'r+', encoding='utf-8') as f:
+                c = f.read()
+                if 'android:configChanges' not in c:
+                    c = c.replace(
+                        '<activity',
+                        '<activity\n            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"'
+                    )
+                    f.seek(0); f.write(c); f.truncate()
+            print(f"[Patch] Fixed AndroidManifest.xml configChanges")
+
+# 2. 修复 settings.gradle.kts
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file == 'settings.gradle.kts':
@@ -14,7 +29,7 @@ for r, _, fs in os.walk('.'):
                     )
                     f.seek(0); f.write(c); f.truncate()
 
-# 2. 修复 app/build.gradle.kts
+# 3. 修复 app/build.gradle.kts
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file in ['build.gradle.kts', 'build.gradle'] and 'app' in r:
@@ -35,7 +50,7 @@ for r, _, fs in os.walk('.'):
                         c = c.replace('dependencies {', 'dependencies {\n    implementation("androidx.documentfile:documentfile:1.0.1")')
                 f.seek(0); f.write(c); f.truncate()
 
-# 3. ZipStoredWriter.kt (只打包不压二次压缩，保留原体积)
+# 4. ZipStoredWriter.kt
 zip_writer_code = '''package com.example.pdf2cbz
 
 import java.util.zip.CRC32
@@ -59,9 +74,10 @@ object ZipStoredWriter {
 }
 '''
 
-# 4. MainActivity.kt (100% 字节级直通剥离)
+# 5. MainActivity.kt（新增持久化路径记忆 + 防旋转重置）
 main_activity_code = '''package com.example.pdf2cbz
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -102,11 +118,17 @@ class MainActivity : ComponentActivity() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             outputTree = uri
+            // 持久化保存路径到本地 SharedPreferences
+            saveOutputTreeUri(uri)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 启动时自动恢复上次选择的输出路径
+        restoreOutputTreeUri()
+
         setContent {
             MaterialTheme {
                 val scope = rememberCoroutineScope()
@@ -118,7 +140,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text("PDF2CBZ Direct", style = MaterialTheme.typography.headlineSmall)
-                    Text("PDF 原生图片流无损直通抽取")
+                    Text("PDF 原生图片流无损提取 · 路径自动记忆")
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -129,7 +151,7 @@ class MainActivity : ComponentActivity() {
                         OutlinedButton(
                             enabled = !isProcessing,
                             onClick = { pickTree.launch(null) }
-                        ) { Text("输出目录") }
+                        ) { Text("更改输出目录") }
                     }
 
                     Text("已选 PDF：${pdfs.size} 个")
@@ -177,6 +199,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveOutputTreeUri(uri: Uri) {
+        val sp = getSharedPreferences("pdf2cbz_prefs", Context.MODE_PRIVATE)
+        sp.edit().putString("saved_output_tree", uri.toString()).apply()
+    }
+
+    private fun restoreOutputTreeUri() {
+        val sp = getSharedPreferences("pdf2cbz_prefs", Context.MODE_PRIVATE)
+        val uriStr = sp.getString("saved_output_tree", null) ?: return
+        val uri = Uri.parse(uriStr)
+
+        // 校验 SAF 权限有效性
+        val hasPermission = contentResolver.persistedUriPermissions.any {
+            it.uri == uri && it.isWritePermission
+        }
+        if (hasPermission) {
+            outputTree = uri
+        }
+    }
+
     private fun getFileName(uri: Uri): String? {
         var name: String? = null
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -188,7 +229,6 @@ class MainActivity : ComponentActivity() {
         return name
     }
 
-    // 从 PDF 二进制字节流中，逐个读取原始图片（零解码、零失真）
     private fun extractRawImages(inputStream: InputStream): List<ByteArray> {
         val bytes = inputStream.readBytes()
         val images = mutableListOf<ByteArray>()
@@ -196,7 +236,6 @@ class MainActivity : ComponentActivity() {
         val len = bytes.size
 
         while (i < len - 3) {
-            // 匹配 JPEG 头 FF D8 FF
             if ((bytes[i].toInt() and 0xFF) == 0xFF &&
                 (bytes[i + 1].toInt() and 0xFF) == 0xD8 &&
                 (bytes[i + 2].toInt() and 0xFF) == 0xFF
@@ -204,12 +243,10 @@ class MainActivity : ComponentActivity() {
                 val start = i
                 var j = start + 2
                 while (j < len - 1) {
-                    // 匹配 JPEG 尾 FF D9
                     if ((bytes[j].toInt() and 0xFF) == 0xFF &&
                         (bytes[j + 1].toInt() and 0xFF) == 0xD9
                     ) {
                         val end = j + 2
-                        // 过滤掉小于 30KB 的矢量微型图标或杂小元素
                         if (end - start > 30 * 1024) {
                             images.add(bytes.copyOfRange(start, end))
                             i = end
