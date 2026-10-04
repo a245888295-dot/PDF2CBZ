@@ -27,18 +27,23 @@ jobs:
 
       - name: Find Root Directory and Build
         run: |
-          # 自动寻找包含 settings.gradle.kts 的根目录
+          # 自动寻找项目根目录
           ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
           echo "Root project found in: $ROOT_DIR"
           cd "$ROOT_DIR"
           
-          # 在根目录生成 gradlew (确保使用 9.0 版本)
+          # 生成 Gradle 9.0 包装器
           gradle wrapper --gradle-version 9.0
           chmod +x gradlew
           
-          # 【关键一步】自动修改 themes.xml，修复 AI 写错的代码
-          echo "Fixing themes.xml..."
-          find . -name "themes.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
+          # 【暴力修复】在所有 XML 文件中搜索并替换出错的 Material 主题
+          echo "Fixing Theme errors in all XML files..."
+          find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
+          find . -type f -name "*.xml" -exec sed -i 's|android:Theme.Material.DayNight.NoActionBar|android:Theme.Material.Light.NoActionBar|g' {} +
+          
+          # 验证一下是否还有漏网之鱼
+          echo "Checking for remaining Theme references..."
+          grep -rn "Theme.Material" . || echo "No more Theme.Material references found."
           
           # 开始编译
           ./gradlew assembleDebug
