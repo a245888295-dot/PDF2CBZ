@@ -111,8 +111,8 @@ jobs:
           # 4. 修复 Theme 素材样式引用报错
           find . -type f -name "*.xml" -exec sed -i 's|android:style/Theme.Material.DayNight.NoActionBar|android:style/Theme.Material.Light.NoActionBar|g' {} +
 
-          # 5. 生成 Wrapper 并执行打包
-          gradle wrapper --gradle-version 8.7
+          # 5. 生成对应版本的 Wrapper 并执行打包
+          gradle wrapper --gradle-version 8.9
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
