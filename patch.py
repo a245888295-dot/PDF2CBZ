@@ -1,6 +1,16 @@
 import os
+import zipfile
+import shutil
 
-# ==================== 1. 修复 AndroidManifest.xml ====================
+# ==================== 配置区 ====================
+SOURCE_ZIP_NAME = "source.zip"  # 改成你的源 zip 文件名
+BACKUP_SUFFIX = ".old"          # 旧 zip 的备份后缀
+# ================================================
+
+# 1. 全量覆盖所有文件（所有历史更新合并版）
+print(">>> 步骤1: 全量覆盖项目文件...")
+
+# --- 1.1 修复 AndroidManifest.xml ---
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file == 'AndroidManifest.xml':
@@ -13,9 +23,9 @@ for r, _, fs in os.walk('.'):
                         '<activity\n            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"'
                     )
                     f.seek(0); f.write(c); f.truncate()
-            print(f"[Patch] Fixed AndroidManifest.xml configChanges")
+            print(f"[Patch] AndroidManifest.xml 已更新")
 
-# ==================== 2. 修复 settings.gradle.kts ====================
+# --- 1.2 修复 settings.gradle.kts ---
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file == 'settings.gradle.kts':
@@ -28,8 +38,9 @@ for r, _, fs in os.walk('.'):
                         'pluginManagement {\nplugins {\n id("org.jetbrains.kotlin.android") version "2.0.0"\n id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"\n}\n'
                     )
                     f.seek(0); f.write(c); f.truncate()
+            print(f"[Patch] settings.gradle.kts 已更新")
 
-# ==================== 3. 修复 app/build.gradle.kts ====================
+# --- 1.3 修复 app/build.gradle.kts ---
 for r, _, fs in os.walk('.'):
     for file in fs:
         if file in ['build.gradle.kts', 'build.gradle'] and 'app' in r:
@@ -49,8 +60,9 @@ for r, _, fs in os.walk('.'):
                     elif 'documentfile' not in c:
                         c = c.replace('dependencies {', 'dependencies {\n    implementation("androidx.documentfile:documentfile:1.0.1")')
                 f.seek(0); f.write(c); f.truncate()
+            print(f"[Patch] build.gradle.kts 已更新")
 
-# ==================== 4. ZipStoredWriter.kt（保持原样，完美） ====================
+# --- 1.4 写入 ZipStoredWriter.kt ---
 zip_writer_code = r'''package com.example.pdf2cbz
 
 import java.util.zip.CRC32
@@ -73,13 +85,16 @@ object ZipStoredWriter {
 }
 '''
 
-# ==================== 5. MainActivity.kt（融合深度解包与安全防线） ====================
+# --- 1.5 写入 MainActivity.kt（完整版，含原生提取 + 兜底渲染） ---
 main_activity_code = r'''package com.example.pdf2cbz
 
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -96,7 +111,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -148,9 +163,7 @@ class MainActivity : ComponentActivity() {
                 val logListState = rememberLazyListState()
 
                 LaunchedEffect(logs.size) {
-                    if (logs.isNotEmpty()) {
-                        logListState.animateScrollToItem(logs.size - 1)
-                    }
+                    if (logs.isNotEmpty()) logListState.animateScrollToItem(logs.size - 1)
                 }
 
                 Column(
@@ -167,7 +180,7 @@ class MainActivity : ComponentActivity() {
 
                         OutlinedButton(
                             enabled = !isProcessing,
-                            onClick = { 
+                            onClick = {
                                 val initialUri = outputTree?.let { uri ->
                                     try {
                                         val docId = DocumentsContract.getTreeDocumentId(uri)
@@ -180,9 +193,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
@@ -230,7 +241,7 @@ class MainActivity : ComponentActivity() {
 
                     Card(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+                        colors = CardDefaults.cardColors(containerColor = ComposeColor(0xFF1E1E1E))
                     ) {
                         LazyColumn(
                             state = logListState,
@@ -239,7 +250,7 @@ class MainActivity : ComponentActivity() {
                             items(logs) { log ->
                                 Text(
                                     text = log,
-                                    color = Color(0xFF00FF66),
+                                    color = ComposeColor(0xFF00FF66),
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     modifier = Modifier.padding(vertical = 2.dp)
@@ -322,7 +333,7 @@ class MainActivity : ComponentActivity() {
                         (bytes[j + 1].toInt() and 0xFF) == 0xD9
                     ) {
                         val end = j + 2
-                        if ((end - start) / 1024 > 30) { // 过滤小于 30KB 的微图
+                        if ((end - start) / 1024 > 30) {
                             list.add(bytes.copyOfRange(start, end))
                             i = end
                             break
@@ -367,20 +378,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun extractLosslessNativeImages(inputStream: InputStream, logAction: (String) -> Unit): List<ByteArray> {
-        // 【内存防线】直接读取，但对于超大文件，在读取时会被系统限制或需要流式处理
-        // 如果你经常处理 500MB 以上的 PDF，强烈建议后续集成 PdfBox-Android
         val bytes = inputStream.readBytes()
         val len = bytes.size
         logAction("读取 PDF 文件大小: ${len / 1024} KB")
 
-        // 1. 优先直出外层裸流
         val directImages = findJpegsInBytes(bytes)
         if (directImages.isNotEmpty()) {
             logAction("直出匹配成功：找到 ${directImages.size} 张裸流 JPEG 原图")
             return directImages
         }
 
-        // 2. 穿透 PDF 压缩流，解压解包内部原始数据
         logAction("开启 PDF 深度数据流解包 (Flate/Zlib 解压)...")
         val streamMarker = "stream".toByteArray(Charsets.US_ASCII)
         val endStreamMarker = "endstream".toByteArray(Charsets.US_ASCII)
@@ -420,6 +427,45 @@ class MainActivity : ComponentActivity() {
         return images
     }
 
+    private fun renderPdfFallback(pdfUri: Uri, outputStream: java.io.OutputStream, logAction: (String) -> Unit) {
+        try {
+            contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
+                val renderer = PdfRenderer(pfd)
+                val pageCount = renderer.pageCount
+                logAction("开始逐页渲染，共 $pageCount 页...")
+
+                ZipOutputStream(outputStream.buffered()).use { zipOut ->
+                    for (i in 0 until pageCount) {
+                        val page = renderer.openPage(i)
+                        val width = (page.width * 1.5f).toInt()
+                        val height = (page.height * 1.5f).toInt()
+
+                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        bitmap.eraseColor(Color.WHITE)
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, baos)
+
+                        val entryName = String.format("%04d.jpg", i + 1)
+                        ZipStoredWriter.addStoredBytes(zipOut, baos.toByteArray(), entryName)
+
+                        bitmap.recycle()
+                        page.close()
+
+                        if (i % 5 == 0 || i == pageCount - 1) {
+                            logAction("已渲染 ${i + 1}/$pageCount 页")
+                        }
+                    }
+                }
+                renderer.close()
+            }
+        } catch (e: Exception) {
+            logAction("❌ 渲染过程异常: ${e.localizedMessage}")
+            throw e
+        }
+    }
+
     private suspend fun convertPdfsToCbz() {
         val targetTreeUri = outputTree ?: return
         val parentDocUri = try {
@@ -451,7 +497,21 @@ class MainActivity : ComponentActivity() {
             }
 
             if (rawImages.isEmpty()) {
-                appendLog("⚠️ 提取失败: 未找到有效内嵌 JPEG（可能为纯矢量/加密 PDF）")
+                appendLog("⚠️ 原生流提取失败，自动切换至兜底渲染模式...")
+                val targetUri = try {
+                    DocumentsContract.createDocument(contentResolver, parentDocUri, "application/x-cbz", cbzName)
+                } catch (e: Exception) { null }
+
+                if (targetUri != null) {
+                    try {
+                        contentResolver.openOutputStream(targetUri)?.use { os ->
+                            renderPdfFallback(pdfUri, os) { log -> appendLog(log) }
+                        }
+                        appendLog("✅ 成功生成 $cbzName (兜底渲染完成)")
+                    } catch (e: Exception) {
+                        appendLog("❌ 兜底渲染失败: ${e.localizedMessage}")
+                    }
+                }
                 return@forEachIndexed
             }
 
@@ -483,17 +543,45 @@ class MainActivity : ComponentActivity() {
 }
 '''
 
-# ==================== 执行写入 ====================
+# 写入文件
 for r, _, fs in os.walk('.'):
     for file in fs:
         fp = os.path.join(r, file)
         if file == 'MainActivity.kt':
             with open(fp, 'w', encoding='utf-8') as f:
                 f.write(main_activity_code)
-            print(f"[Patch] Overwritten {fp}")
+            print(f"[Patch] MainActivity.kt 已写入")
         elif file == 'ZipStoredWriter.kt':
             with open(fp, 'w', encoding='utf-8') as f:
                 f.write(zip_writer_code)
-            print(f"[Patch] Overwritten {fp}")
+            print(f"[Patch] ZipStoredWriter.kt 已写入")
 
-print("\n✅ 优化补丁注入完毕！")
+# ==================== 步骤2: 把更新后的项目重新打包成 zip ====================
+print("\n>>> 步骤2: 正在把更新后的项目重新打包成源 zip...")
+
+if os.path.exists(SOURCE_ZIP_NAME):
+    # 备份旧 zip
+    backup_name = SOURCE_ZIP_NAME + BACKUP_SUFFIX
+    if os.path.exists(backup_name):
+        os.remove(backup_name)
+    shutil.move(SOURCE_ZIP_NAME, backup_name)
+    print(f"[Zip] 旧源 zip 已备份为: {backup_name}")
+
+# 重新打包当前项目（排除临时构建产物和旧 zip）
+exclude_dirs = {'.gradle', 'build', '.idea', 'app/build', '.git'}
+exclude_files = {SOURCE_ZIP_NAME, SOURCE_ZIP_NAME + BACKUP_SUFFIX}
+
+with zipfile.ZipFile(SOURCE_ZIP_NAME, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk('.'):
+        # 过滤目录
+        dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
+        for file in files:
+            if file in exclude_files:
+                continue
+            file_path = os.path.join(root, file)
+            arcname = os.path.relpath(file_path, '.')
+            zf.write(file_path, arcname)
+
+print(f"[Zip] 新的源 zip 已生成: {SOURCE_ZIP_NAME}")
+print("\n✅ 全部完成！下次编译时，源 zip 已经是最新版，")
+print("   以后你可以只用几十行的增量补丁来更新了。")
