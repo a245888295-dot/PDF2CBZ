@@ -325,3 +325,124 @@ def patch_v3_future():
     pass
 
 patch_v3_future()
+# ==============================================================================
+# 🔻🔻🔻 [V0.4 增量追加] 右上角日志按钮 + 自动生成 pdf2cbz_log.txt 日志文件 🔻🔻🔻
+# ==============================================================================
+def patch_v0_4_add_settings_and_logger():
+    target_file = None
+    for r, _, fs in os.walk('.'):
+        for file in fs:
+            if file == 'MainActivity.kt':
+                target_file = os.path.join(r, file)
+                break
+
+    if not target_file or not os.path.exists(target_file):
+        print("⚠ [V0.4] 未找到 MainActivity.kt，跳过日志补丁")
+        return
+
+    with open(target_file, 'r', encoding='utf-8') as f:
+        code = f.read()
+
+    if "showLogDialog" in code:
+        print("ℹ [V0.4] 日志与调试功能已存在，无需重复追加。")
+        return
+
+    # 1. 注入需要的 Import 模块
+    imports_to_add = [
+        "import androidx.compose.foundation.text.selection.SelectionContainer",
+        "import androidx.compose.ui.Alignment",
+        "import java.text.SimpleDateFormat",
+        "import java.util.Date",
+        "import java.util.Locale"
+    ]
+    for imp in imports_to_add:
+        if imp not in code:
+            code = imp + "\n" + code
+
+    # 2. 修改顶部标题栏，在右上角放置 [📋 日志] 按钮
+    old_header = 'Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)'
+    new_header = '''Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)
+                        OutlinedButton(onClick = { showLogDialog = true }) {
+                            Text("📋 日志")
+                        }
+                    }'''
+    if old_header in code:
+        code = code.replace(old_header, new_header)
+
+    # 3. 增加日志弹窗状态变量与日志列表
+    old_state = 'var log by remember { mutableStateOf("等待选择 PDF…") }'
+    new_state = '''var log by remember { mutableStateOf("等待选择 PDF…") }
+                var showLogDialog by remember { mutableStateOf(false) }
+                val fullLogs = remember { mutableStateListOf<String>() }'''
+    if old_state in code:
+        code = code.replace(old_state, new_state)
+
+    # 4. 在界面中嵌入对话框 UI
+    dialog_ui = '''
+                if (showLogDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showLogDialog = false },
+                        title = { Text("🛠 转换日志与调试历史") },
+                        text = {
+                            SelectionContainer {
+                                LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
+                                    items(fullLogs) { line ->
+                                        Text(line, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = { showLogDialog = false }) {
+                                Text("关闭")
+                            }
+                        }
+                    )
+                }
+'''
+    if "Text(log)" in code:
+        code = code.replace("Text(log)", "Text(log)\n" + dialog_ui)
+
+    # 5. 挂载全局日志记录器，记录实时时间戳
+    old_convert_sig = "private suspend fun convertPdfsToCbz(onProgress: (String) -> Unit) {"
+    new_convert_sig = """private suspend fun convertPdfsToCbz(onProgress: (String) -> Unit) {
+        val timeStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val logBuffer = StringBuilder("=== PDF2CBZ 运行日志 ($timeStamp) ===\\n")
+        val logAndProgress: (String) -> Unit = { msg ->
+            val entry = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
+            logBuffer.append(entry).append("\\n")
+            scope.launch(Dispatchers.Main) { fullLogs.add(entry) }
+            onProgress(msg)
+        }"""
+
+    if old_convert_sig in code:
+        code = code.replace(old_convert_sig, new_convert_sig)
+        code = code.replace("onProgress(", "logAndProgress(")
+
+    # 6. 转换结束时，在目标目录写出 pdf2cbz_log.txt
+    old_finish = 'logAndProgress("转换完成！共成功处理 $totalPdfs 个文件。")'
+    new_finish = '''logAndProgress("转换完成！共成功处理 $totalPdfs 个文件。")
+        try {
+            val logFile = docDir.createFile("text/plain", "pdf2cbz_log.txt")
+            logFile?.uri?.let { uri ->
+                contentResolver.openOutputStream(uri)?.use { os ->
+                    os.write(logBuffer.toString().toByteArray())
+                }
+            }
+        } catch (_: Exception) {}'''
+
+    if old_finish in code:
+        code = code.replace(old_finish, new_finish)
+
+    with open(target_file, 'w', encoding='utf-8') as f:
+        f.write(code)
+
+    print("✅ [V0.4] 已成功添加右上角日志按钮与 pdf2cbz_log.txt 自动导出功能！")
+
+# 自动执行 V0.4 追加更新
+patch_v0_4_add_settings_and_logger()
