@@ -1,4 +1,4 @@
-Name: Build APK
+name: Build APK
 
 on:
   push:
@@ -95,11 +95,10 @@ jobs:
                           lines = f.readlines()
                       new_lines = []
                       for line in lines:
-                          # 修正对 crc (CRC32 对象) 的错误 Long 类型赋值
                           if re.search(r'\bcrc\s*=\s*crc\.value', line):
                               line = re.sub(r'\bcrc\s*=\s*crc\.value', 'entry.crc = crc.value', line)
                           elif re.search(r'\bcrc\s*=\s*.*', line) and 'CRC32()' not in line:
-                              line = '// ' + line  # 注释掉异常赋值行
+                              line = '// ' + line
                           new_lines.append(line)
                       with open(filepath, 'w', encoding='utf-8') as f:
                           f.writelines(new_lines)
