@@ -1,10 +1,24 @@
 import os
 import re
 
-print("🚀 正在全局重组 PDF2CBZ（自动适配 Kotlin 2.0 Compose 插件 + 更新 MainActivity）...")
+print("🚀 正在全局重组 PDF2CBZ（自动清理冲突文件 + 补全 Gradle 依赖 + 更新 MainActivity）...")
 
+# 1. 自动清理可能导致类名重复冲突的独立 ZipStoredWriter.kt 文件
+def clean_conflicting_files():
+    for r, _, fs in os.walk('.'):
+        for file in fs:
+            if file == 'ZipStoredWriter.kt':
+                fp = os.path.join(r, file)
+                try:
+                    os.remove(fp)
+                    print(f"🧹 已成功清理冲突文件: {fp}")
+                except Exception as e:
+                    print(f"⚠ 清理冲突文件失败: {e}")
+
+clean_conflicting_files()
+
+# 2. 自动检测 Kotlin 版本
 def find_kotlin_version():
-    """自动寻找项目匹配的 Kotlin 版本号"""
     toml_path = os.path.join('gradle', 'libs.versions.toml')
     if os.path.exists(toml_path):
         try:
@@ -33,35 +47,63 @@ def find_kotlin_version():
                     pass
     return "2.0.20"
 
-# 1. 自动适配 app/build.gradle.kts 的 Kotlin 2.0 Compose 插件
-def fix_compose_plugin():
+# 3. 强力修复 app/build.gradle.kts 依赖与 Compose 插件
+def patch_build_gradle():
     kotlin_ver = find_kotlin_version()
     print(f"🔍 检测到当前项目 Kotlin 版本: {kotlin_ver}")
 
-    for r, _, fs in os.walk('.'):
-        for file in fs:
-            if file == 'build.gradle.kts' and 'app' in r:
-                fp = os.path.join(r, file)
-                try:
-                    with open(fp, 'r', encoding='utf-8') as f:
-                        content = f.read()
+    gradle_path = None
+    for root, dirs, files in os.walk('.'):
+        if 'build.gradle.kts' in files and ('app' in root or root == '.'):
+            if 'app' in root:
+                gradle_path = os.path.join(root, 'build.gradle.kts')
+                break
+            else:
+                gradle_path = os.path.join(root, 'build.gradle.kts')
 
-                    # 清理可能存在的旧配置
-                    content = re.sub(r'.*org\.jetbrains\.kotlin\.plugin\.compose.*\n?', '', content)
+    if not gradle_path:
+        print("❌ 未找到 app/build.gradle.kts")
+        return
 
-                    plugin_line = f'    id("org.jetbrains.kotlin.plugin.compose") version "{kotlin_ver}"\n'
-                    if 'plugins {' in content:
-                        content = content.replace('plugins {', f'plugins {{\n{plugin_line}')
+    with open(gradle_path, 'r', encoding='utf-8') as f:
+        content = f.read()
 
-                    with open(fp, 'w', encoding='utf-8') as f:
-                        f.write(content)
-                    print(f"✅ 已成功补全 Compose Compiler 插件: {fp}")
-                except Exception as e:
-                    print(f"⚠ 配置 Compose 插件失败: {e}")
+    # 清除没有版本号的无用 compose 插件行
+    content = re.sub(r'.*org\.jetbrains\.kotlin\.plugin\.compose.*\n?', '', content)
 
-fix_compose_plugin()
+    # 补全 Compose 插件
+    plugin_line = f'    id("org.jetbrains.kotlin.plugin.compose") version "{kotlin_ver}"\n'
+    if 'plugins {' in content:
+        content = content.replace('plugins {', f'plugins {{\n{plugin_line}', 1)
 
-# 2. 全量更新包含无损直出与日志调试能力的 MainActivity.kt
+    # 注入缺失的基础依赖项
+    deps_to_add = [
+        'implementation("androidx.activity:activity-compose:1.9.0")',
+        'implementation("androidx.documentfile:documentfile:1.0.1")',
+        'implementation("androidx.compose.material3:material3:1.2.1")',
+        'implementation("androidx.compose.ui:ui:1.6.8")'
+    ]
+
+    needed_deps = []
+    for dep in deps_to_add:
+        pkg_key = dep.split('"')[1].split(':')[1]  # 获取包名特征
+        if pkg_key not in content:
+            needed_deps.append(f"    {dep}")
+
+    if needed_deps:
+        deps_block = "\n".join(needed_deps) + "\n"
+        if 'dependencies {' in content:
+            content = content.replace('dependencies {', f'dependencies {{\n{deps_block}', 1)
+        else:
+            content += f"\ndependencies {{\n{deps_block}}}\n"
+
+    with open(gradle_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    print(f"✅ 已成功修复并更新 Gradle 配置: {gradle_path}")
+
+patch_build_gradle()
+
+# 4. 写入完全无外部类依赖的 MainActivity.kt
 def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
@@ -284,6 +326,19 @@ class MainActivity : ComponentActivity() {
         return images
     }
 
+    private fun writeZipStoredEntry(zipOut: ZipOutputStream, bytes: ByteArray, entryName: String) {
+        val entry = ZipEntry(entryName)
+        entry.method = ZipEntry.STORED
+        entry.size = bytes.size.toLong()
+        entry.compressedSize = bytes.size.toLong()
+        val crc = CRC32()
+        crc.update(bytes)
+        entry.crc = crc.value
+        zipOut.putNextEntry(entry)
+        zipOut.write(bytes)
+        zipOut.closeEntry()
+    }
+
     private suspend fun convertPdfsToCbz(
         onLog: (String) -> Unit,
         onProgress: (String) -> Unit
@@ -332,7 +387,7 @@ class MainActivity : ComponentActivity() {
                         ZipOutputStream(os.buffered()).use { zipOut ->
                             rawJpegs.forEachIndexed { imgIdx, bytes ->
                                 val entryName = String.format("%04d.jpg", imgIdx + 1)
-                                ZipStoredWriter.addStoredBytes(zipOut, bytes, entryName)
+                                writeZipStoredEntry(zipOut, bytes, entryName)
                             }
                         }
                     }
@@ -368,7 +423,7 @@ class MainActivity : ComponentActivity() {
                                             bitmap.recycle()
 
                                             val entryName = String.format("%04d.jpg", i + 1)
-                                            ZipStoredWriter.addStoredBytes(zipOut, imageBytes, entryName)
+                                            writeZipStoredEntry(zipOut, imageBytes, entryName)
                                         }
                                     }
                                 }
@@ -386,27 +441,12 @@ class MainActivity : ComponentActivity() {
 
         try {
             val logFile = docDir.createFile("text/plain", "pdf2cbz_log.txt")
-            logFile?.uri?.let { uri ->
-                contentResolver.openOutputStream(uri)?.use { os ->
+            if (logFile != null) {
+                contentResolver.openOutputStream(logFile.uri)?.use { os ->
                     os.write(logBuffer.toString().toByteArray())
                 }
             }
         } catch (_: Exception) {}
-    }
-}
-
-object ZipStoredWriter {
-    fun addStoredBytes(zipOut: ZipOutputStream, bytes: ByteArray, entryName: String) {
-        val entry = ZipEntry(entryName)
-        entry.method = ZipEntry.STORED
-        entry.size = bytes.size.toLong()
-        entry.compressedSize = bytes.size.toLong()
-        val crc = CRC32()
-        crc.update(bytes)
-        entry.crc = crc.value
-        zipOut.putNextEntry(entry)
-        zipOut.write(bytes)
-        zipOut.closeEntry()
     }
 }
 '''
