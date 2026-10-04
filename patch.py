@@ -1,33 +1,67 @@
 import os
+import re
 
-print("🚀 正在全局重组 PDF2CBZ（自动清洗 Gradle 报错插件 + 更新 MainActivity.kt）...")
+print("🚀 正在全局重组 PDF2CBZ（自动适配 Kotlin 2.0 Compose 插件 + 更新 MainActivity）...")
 
-# 1. 自动清洗 build.gradle.kts 中引发报错的 compose 插件
-def clean_gradle_plugins():
+def find_kotlin_version():
+    """自动寻找项目匹配的 Kotlin 版本号"""
+    toml_path = os.path.join('gradle', 'libs.versions.toml')
+    if os.path.exists(toml_path):
+        try:
+            with open(toml_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            m = re.search(r'kotlin\s*=\s*"([^"]+)"', content)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
     for r, _, fs in os.walk('.'):
         for file in fs:
             if file.endswith('.gradle.kts'):
                 fp = os.path.join(r, file)
                 try:
                     with open(fp, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()
-                    
-                    # 过滤掉引发 Plugin not found 错误的这一行
-                    cleaned_lines = [
-                        line for line in lines 
-                        if 'org.jetbrains.kotlin.plugin.compose' not in line
-                    ]
+                        c = f.read()
+                    m = re.search(r'kotlin[^\n]*version[^\n]*"([^"]+)"', c, re.IGNORECASE)
+                    if m:
+                        return m.group(1)
+                    m2 = re.search(r'"org\.jetbrains\.kotlin[^\n]*"\s*version\s*"([^"]+)"', c)
+                    if m2:
+                        return m2.group(1)
+                except Exception:
+                    pass
+    return "2.0.20"
 
-                    if len(cleaned_lines) != len(lines):
-                        with open(fp, 'w', encoding='utf-8') as f:
-                            f.writelines(cleaned_lines)
-                        print(f"✅ 已成功清除报错插件行: {fp}")
+# 1. 自动适配 app/build.gradle.kts 的 Kotlin 2.0 Compose 插件
+def fix_compose_plugin():
+    kotlin_ver = find_kotlin_version()
+    print(f"🔍 检测到当前项目 Kotlin 版本: {kotlin_ver}")
+
+    for r, _, fs in os.walk('.'):
+        for file in fs:
+            if file == 'build.gradle.kts' and 'app' in r:
+                fp = os.path.join(r, file)
+                try:
+                    with open(fp, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    # 清理可能存在的旧配置
+                    content = re.sub(r'.*org\.jetbrains\.kotlin\.plugin\.compose.*\n?', '', content)
+
+                    plugin_line = f'    id("org.jetbrains.kotlin.plugin.compose") version "{kotlin_ver}"\n'
+                    if 'plugins {' in content:
+                        content = content.replace('plugins {', f'plugins {{\n{plugin_line}')
+
+                    with open(fp, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    print(f"✅ 已成功补全 Compose Compiler 插件: {fp}")
                 except Exception as e:
-                    print(f"⚠ 清洗 Gradle 遇到问题: {e}")
+                    print(f"⚠ 配置 Compose 插件失败: {e}")
 
-clean_gradle_plugins()
+fix_compose_plugin()
 
-# 2. 写入包含无损直出与日志功能的完整 MainActivity.kt
+# 2. 全量更新包含无损直出与日志调试能力的 MainActivity.kt
 def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
