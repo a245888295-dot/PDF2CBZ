@@ -1,4 +1,4 @@
-name: Build APK from Zip
+name: Build APK
 
 on:
   push:
@@ -20,20 +20,27 @@ jobs:
 
       - name: Unzip Project
         run: |
-          # 解压上传的压缩包 (使用通配符防文件名截断)
           unzip -o *.zip
-          
-      - name: Find and Build Project
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Find Project and Build
         run: |
-          # 查找解压后的 gradlew 文件并进入该目录
-          GRADLEW_PATH=$(find . -name "gradlew" -type f | head -n 1)
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "ERROR: gradlew not found!"
+          # 自动寻找包含 build.gradle.kts 的文件夹
+          PROJECT_DIR=$(find . -name "build.gradle.kts" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Project folder not found!"
             exit 1
           fi
-          PROJECT_DIR=$(dirname "$GRADLEW_PATH")
+          echo "Project found in: $PROJECT_DIR"
           cd "$PROJECT_DIR"
+          
+          # 生成 gradlew 启动器 (指定稳定版本)
+          gradle wrapper --gradle-version 8.7
           chmod +x gradlew
+          
+          # 开始编译
           ./gradlew assembleDebug
 
       - name: Upload APK
