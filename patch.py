@@ -1,7 +1,7 @@
 import os
 import re
 
-print("🚀 正在全局重组 PDF2CBZ（自动修补 Manifest + 防屏幕/拔电重置 ViewModel + 极致 I/O 提速）...")
+print("🚀 正在全局重组 PDF2CBZ（Clash 极简卡片 UI + 画质切换 + ViewModel 状态持久化）...")
 
 # 1. 自动清理冲突文件
 def clean_conflicting_files():
@@ -27,7 +27,6 @@ def patch_manifest():
                     with open(fp, 'r', encoding='utf-8') as f:
                         content = f.read()
 
-                    # 防止旋转屏幕/插拔充电/主题切换导致 Activity 销毁重建
                     if 'android:configChanges' not in content:
                         config_attr = 'android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"'
                         content = content.replace('<activity', f'<activity {config_attr}')
@@ -69,7 +68,7 @@ def find_kotlin_version():
                     pass
     return "2.0.20"
 
-# 4. 修复 build.gradle.kts，补充 ViewModel 依赖库
+# 4. 修复 build.gradle.kts
 def patch_build_gradle():
     kotlin_ver = find_kotlin_version()
     print(f"🔍 检测到当前项目 Kotlin 版本: {kotlin_ver}")
@@ -122,7 +121,7 @@ def patch_build_gradle():
 
 patch_build_gradle()
 
-# 5. 更新 MainActivity.kt：包含 ViewModel 状态持久化 + 极大 I/O 提速逻辑
+# 5. 重构 MainActivity.kt 为 Clash 卡片 UI + 画质选择 + 关于/设置页面
 def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
@@ -147,15 +146,21 @@ import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -171,11 +176,18 @@ import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
+enum class QualityMode(val title: String, val desc: String) {
+    ADAPTIVE("自适应", "优先无损直通，兼容高画质渲染（推荐）"),
+    NATIVE("原生", "强制最高清晰度渲染（体积较大）"),
+    LOW("低画质", "降低分辨率与质量，大幅减小体积")
+}
+
 class MainViewModel : ViewModel() {
     val pdfs = mutableStateListOf<Uri>()
     var outputTree by mutableStateOf<Uri?>(null)
-    var log by mutableStateOf("等待选择 PDF…")
+    var log by mutableStateOf("等待操作…")
     var isProcessing by mutableStateOf(false)
+    var qualityMode by mutableStateOf(QualityMode.ADAPTIVE)
     val fullLogs = mutableStateListOf<String>()
 }
 
@@ -209,104 +221,248 @@ class MainActivity : ComponentActivity() {
             val vm: MainViewModel = viewModel()
             mainViewModel = vm
 
-            MaterialTheme {
-                val scope = rememberCoroutineScope()
-                var showLogDialog by remember { mutableStateOf(false) }
+            val darkColorScheme = darkColorScheme(
+                background = ComposeColor(0xFF121212),
+                surface = ComposeColor(0xFF1E1E1E),
+                surfaceVariant = ComposeColor(0xFF2A2A2A),
+                primary = ComposeColor(0xFF80D8FF),
+                onBackground = ComposeColor(0xFFEEEEEE),
+                onSurface = ComposeColor(0xFFFFFFFF)
+            )
 
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+            MaterialTheme(colorScheme = darkColorScheme) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    val scope = rememberCoroutineScope()
+                    var showLogDialog by remember { mutableStateOf(false) }
+                    var showSettingsDialog by remember { mutableStateOf(false) }
+                    var showAboutDialog by remember { mutableStateOf(false) }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 20.dp, vertical = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        Text("PDF2CBZ Ultimate", style = MaterialTheme.typography.headlineSmall)
-                        OutlinedButton(onClick = { showLogDialog = true }) {
-                            Text("📋 日志")
-                        }
-                    }
-
-                    Text("无损直出 · 多核极速 · 防切屏/拔电重置")
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            enabled = !vm.isProcessing,
-                            onClick = { pickPdfs.launch(arrayOf("application/pdf")) }
-                        ) { Text("选择 PDF") }
-
-                        OutlinedButton(
-                            enabled = !vm.isProcessing,
-                            onClick = { pickTree.launch(null) }
-                        ) { Text("输出目录") }
-                    }
-
-                    Text("已选 PDF：${vm.pdfs.size} 个")
-                    Text("输出路径：${vm.outputTree ?: "未选择"}")
-
-                    if (vm.pdfs.isNotEmpty()) {
-                        LazyColumn(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        // 顶栏标题
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(bottom = 8.dp)
                         ) {
-                            items(vm.pdfs) { uri ->
+                            Text(
+                                text = "🐱 PDF2CBZ",
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+
+                        // 卡片 1：选择 PDF
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !vm.isProcessing) { pickPdfs.launch(arrayOf("application/pdf")) }
+                        ) {
+                            Column(modifier = Modifier.padding(20.dp)) {
                                 Text(
-                                    getFileName(uri) ?: uri.toString(),
-                                    style = MaterialTheme.typography.bodyMedium
+                                    text = if (vm.pdfs.isEmpty()) "未选择文件" else "已选 ${vm.pdfs.size} 个 PDF",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = if (vm.pdfs.isEmpty()) "点击选择要转换的 PDF" else "点击重新选择文件",
+                                    fontSize = 13.sp,
+                                    color = ComposeColor.Gray
                                 )
                             }
                         }
-                    } else {
-                        Spacer(Modifier.weight(1f))
-                    }
 
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = vm.pdfs.isNotEmpty() && vm.outputTree != null && !vm.isProcessing,
-                        onClick = {
-                            vm.isProcessing = true
-                            scope.launch(Dispatchers.IO) {
-                                convertPdfsToCbz(
-                                    vm = vm,
-                                    onLog = { entry ->
-                                        scope.launch(Dispatchers.Main) { vm.fullLogs.add(entry) }
-                                    },
-                                    onProgress = { status ->
-                                        scope.launch(Dispatchers.Main) { vm.log = status }
-                                    }
+                        // 卡片 2：输出目录
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !vm.isProcessing) { pickTree.launch(null) }
+                        ) {
+                            Column(modifier = Modifier.padding(20.dp)) {
+                                Text(
+                                    text = "输出目录",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
-                                vm.isProcessing = false
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = vm.outputTree?.let { getFileName(it) ?: it.toString() } ?: "未设置 (点击指定存储路径)",
+                                    fontSize = 13.sp,
+                                    color = ComposeColor.Gray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
-                    ) {
-                        Text(if (vm.isProcessing) "正在转换中..." else "开始转换")
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // 菜单列表选项
+                        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                            MenuRow(icon = "📋", title = "日志") { showLogDialog = true }
+                            MenuRow(icon = "⚙️", title = "设置") { showSettingsDialog = true }
+                            MenuRow(icon = "ℹ️", title = "关于") { showAboutDialog = true }
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        // 状态提示文字
+                        Text(
+                            text = vm.log,
+                            fontSize = 13.sp,
+                            color = ComposeColor.LightGray,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+
+                        // 底部“开始转换”大按钮
+                        Button(
+                            onClick = {
+                                vm.isProcessing = true
+                                scope.launch(Dispatchers.IO) {
+                                    convertPdfsToCbz(
+                                        vm = vm,
+                                        onLog = { entry ->
+                                            scope.launch(Dispatchers.Main) { vm.fullLogs.add(entry) }
+                                        },
+                                        onProgress = { status ->
+                                            scope.launch(Dispatchers.Main) { vm.log = status }
+                                        }
+                                    )
+                                    vm.isProcessing = false
+                                }
+                            },
+                            enabled = vm.pdfs.isNotEmpty() && vm.outputTree != null && !vm.isProcessing,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                        ) {
+                            Text(
+                                text = if (vm.isProcessing) "正在转换中..." else "开始转换",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
-                    Text(vm.log)
-
+                    // --- 弹窗 1：日志 ---
                     if (showLogDialog) {
                         AlertDialog(
                             onDismissRequest = { showLogDialog = false },
-                            title = { Text("🛠 转换日志与调试历史") },
+                            title = { Text("📋 运行日志") },
                             text = {
                                 SelectionContainer {
-                                    LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
+                                    LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
                                         items(vm.fullLogs) { line ->
-                                            Text(line, style = MaterialTheme.typography.bodySmall)
+                                            Text(line, fontSize = 12.sp, color = ComposeColor.LightGray)
                                         }
                                     }
                                 }
                             },
                             confirmButton = {
-                                Button(onClick = { showLogDialog = false }) {
-                                    Text("关闭")
+                                TextButton(onClick = { showLogDialog = false }) { Text("关闭") }
+                            }
+                        )
+                    }
+
+                    // --- 弹窗 2：设置 ---
+                    if (showSettingsDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showSettingsDialog = false },
+                            title = { Text("⚙️ 设置") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("画质与清晰度选项：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    QualityMode.values().forEach { mode ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { vm.qualityMode = mode }
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            RadioButton(
+                                                selected = (vm.qualityMode == mode),
+                                                onClick = { vm.qualityMode = mode }
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Column {
+                                                Text(mode.title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                                Text(mode.desc, fontSize = 11.sp, color = ComposeColor.Gray)
+                                            }
+                                        }
+                                    }
                                 }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showSettingsDialog = false }) { Text("确定") }
+                            }
+                        )
+                    }
+
+                    // --- 弹窗 3：关于 ---
+                    if (showAboutDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showAboutDialog = false },
+                            title = { Text("ℹ️ 关于 PDF2CBZ") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("• 开发者：Gemini & a245888295-dot", fontSize = 14.sp)
+                                    Text("• 联系方式：待定", fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text("• 更新地址：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    SelectionContainer {
+                                        Text(
+                                            text = "https://github.com/a245888295-dot/PDF2CBZ/actions",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showAboutDialog = false }) { Text("关闭") }
                             }
                         )
                     }
                 }
             }
+        }
+    }
+
+    @Composable
+    private fun MenuRow(icon: String, title: String, onClick: () -> Unit) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onClick() }
+                .padding(vertical = 6.dp, horizontal = 4.dp)
+        ) {
+            Text(text = icon, fontSize = 20.sp)
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = title,
+            fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
         }
     }
 
@@ -321,7 +477,6 @@ class MainActivity : ComponentActivity() {
         return name
     }
 
-    // 极速字节对比提取 JPEG
     private fun extractRawJpegsFromPdf(pfd: FileDescriptor): List<ByteArray> {
         val images = mutableListOf<ByteArray>()
         try {
@@ -395,13 +550,14 @@ class MainActivity : ComponentActivity() {
 
         val totalPdfs = vm.pdfs.size
         val pdfList = vm.pdfs.toList()
+        val currentQuality = vm.qualityMode
 
         pdfList.forEachIndexed { index, pdfUri ->
             val rawName = getFileName(pdfUri) ?: "document_$index.pdf"
             val baseName = rawName.substringBeforeLast(".")
             val cbzName = "$baseName.cbz"
 
-            logAndProgress("正在处理 (${index + 1}/$totalPdfs): $rawName")
+            logAndProgress("正在处理 (${index + 1}/$totalPdfs): $rawName [画质模式: ${currentQuality.title}]")
 
             val targetFile = docDir.createFile("application/x-cbz", cbzName)
                 ?: docDir.createFile("application/zip", cbzName)
@@ -413,12 +569,16 @@ class MainActivity : ComponentActivity() {
 
             try {
                 var rawJpegs: List<ByteArray> = emptyList()
-                contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
-                    rawJpegs = extractRawJpegsFromPdf(pfd.fileDescriptor)
+
+                // 自适应模式尝试提取原始 JPEG
+                if (currentQuality == QualityMode.ADAPTIVE) {
+                    contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
+                        rawJpegs = extractRawJpegsFromPdf(pfd.fileDescriptor)
+                    }
                 }
 
                 if (rawJpegs.isNotEmpty()) {
-                    logAndProgress("⚡ [无损直通] 成功提取到 ${rawJpegs.size} 张原始 JPEG 图片...")
+                    logAndProgress("⚡ [无损直通] 提取到 ${rawJpegs.size} 张原始 JPEG 图片...")
                     contentResolver.openOutputStream(targetFile.uri)?.use { os ->
                         ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
                             rawJpegs.forEachIndexed { imgIdx, bytes ->
@@ -428,7 +588,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else {
-                    logAndProgress("🖼 [兼容模式] 未找到纯 JPEG 流，启用高效率渲染...")
+                    logAndProgress("🖼 [高清渲染] 正在多核渲染图片...")
                     contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
                         PdfRenderer(pfd).use { renderer ->
                             contentResolver.openOutputStream(targetFile.uri)?.use { os ->
@@ -440,7 +600,12 @@ class MainActivity : ComponentActivity() {
                                         }
 
                                         renderer.openPage(i).use { page ->
-                                            val targetWidth = 1440f
+                                            val (targetWidth, compressQuality) = when (currentQuality) {
+                                                QualityMode.NATIVE -> 1800f to 90
+                                                QualityMode.ADAPTIVE -> 1440f to 80
+                                                QualityMode.LOW -> 1080f to 60
+                                            }
+
                                             val scale = if (page.width > 0) (targetWidth / page.width).coerceIn(1.0f, 2.0f) else 1.5f
                                             val bitmap = Bitmap.createBitmap(
                                                 (page.width * scale).toInt(),
@@ -456,7 +621,7 @@ class MainActivity : ComponentActivity() {
                                             )
 
                                             val stream = ByteArrayOutputStream()
-                                            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                                            bitmap.compress(Bitmap.CompressFormat.JPEG, compressQuality, stream)
                                             val imageBytes = stream.toByteArray()
                                             bitmap.recycle()
 
