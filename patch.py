@@ -1,9 +1,9 @@
 import os
 import re
 
-print("🚀 正在全局重组 PDF2CBZ（自动清理冲突文件 + 补全 Gradle 依赖 + 更新 MainActivity）...")
+print("🚀 正在全局重组 PDF2CBZ（自动修补 Manifest + 防屏幕/拔电重置 ViewModel + 极致 I/O 提速）...")
 
-# 1. 自动清理可能导致类名重复冲突的独立 ZipStoredWriter.kt 文件
+# 1. 自动清理冲突文件
 def clean_conflicting_files():
     for r, _, fs in os.walk('.'):
         for file in fs:
@@ -17,7 +17,29 @@ def clean_conflicting_files():
 
 clean_conflicting_files()
 
-# 2. 自动检测 Kotlin 版本
+# 2. 修改 AndroidManifest.xml 彻底解决屏幕旋转/插拔充电恢复初始状态的问题
+def patch_manifest():
+    for r, _, fs in os.walk('.'):
+        for file in fs:
+            if file == 'AndroidManifest.xml':
+                fp = os.path.join(r, file)
+                try:
+                    with open(fp, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    # 防止旋转屏幕/插拔充电/主题切换导致 Activity 销毁重建
+                    if 'android:configChanges' not in content:
+                        config_attr = 'android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"'
+                        content = content.replace('<activity', f'<activity {config_attr}')
+                        with open(fp, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        print(f"✅ 已注入 AndroidManifest 防重置属性: {fp}")
+                except Exception as e:
+                    print(f"⚠ 修改 Manifest 失败: {e}")
+
+patch_manifest()
+
+# 3. 自动检测 Kotlin 版本
 def find_kotlin_version():
     toml_path = os.path.join('gradle', 'libs.versions.toml')
     if os.path.exists(toml_path):
@@ -47,7 +69,7 @@ def find_kotlin_version():
                     pass
     return "2.0.20"
 
-# 3. 强力修复 app/build.gradle.kts 依赖与 Compose 插件
+# 4. 修复 build.gradle.kts，补充 ViewModel 依赖库
 def patch_build_gradle():
     kotlin_ver = find_kotlin_version()
     print(f"🔍 检测到当前项目 Kotlin 版本: {kotlin_ver}")
@@ -68,25 +90,22 @@ def patch_build_gradle():
     with open(gradle_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 清除没有版本号的无用 compose 插件行
     content = re.sub(r'.*org\.jetbrains\.kotlin\.plugin\.compose.*\n?', '', content)
-
-    # 补全 Compose 插件
     plugin_line = f'    id("org.jetbrains.kotlin.plugin.compose") version "{kotlin_ver}"\n'
     if 'plugins {' in content:
         content = content.replace('plugins {', f'plugins {{\n{plugin_line}', 1)
 
-    # 注入缺失的基础依赖项
     deps_to_add = [
         'implementation("androidx.activity:activity-compose:1.9.0")',
         'implementation("androidx.documentfile:documentfile:1.0.1")',
         'implementation("androidx.compose.material3:material3:1.2.1")',
-        'implementation("androidx.compose.ui:ui:1.6.8")'
+        'implementation("androidx.compose.ui:ui:1.6.8")',
+        'implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")'
     ]
 
     needed_deps = []
     for dep in deps_to_add:
-        pkg_key = dep.split('"')[1].split(':')[1]  # 获取包名特征
+        pkg_key = dep.split('"')[1].split(':')[1]
         if pkg_key not in content:
             needed_deps.append(f"    {dep}")
 
@@ -103,7 +122,7 @@ def patch_build_gradle():
 
 patch_build_gradle()
 
-# 4. 写入完全无外部类依赖的 MainActivity.kt
+# 5. 更新 MainActivity.kt：包含 ViewModel 状态持久化 + 极大 I/O 提速逻辑
 def update_main_activity():
     target_file = None
     for r, _, fs in os.walk('.'):
@@ -138,6 +157,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -150,15 +171,24 @@ import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
+class MainViewModel : ViewModel() {
+    val pdfs = mutableStateListOf<Uri>()
+    var outputTree by mutableStateOf<Uri?>(null)
+    var log by mutableStateOf("等待选择 PDF…")
+    var isProcessing by mutableStateOf(false)
+    val fullLogs = mutableStateListOf<String>()
+}
+
 class MainActivity : ComponentActivity() {
-    private val pdfs = mutableStateListOf<Uri>()
-    private var outputTree by mutableStateOf<Uri?>(null)
+    private var mainViewModel: MainViewModel? = null
 
     private val pickPdfs = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        pdfs.clear()
-        pdfs.addAll(uris.filter { it.toString().isNotBlank() })
+        mainViewModel?.let { vm ->
+            vm.pdfs.clear()
+            vm.pdfs.addAll(uris.filter { it.toString().isNotBlank() })
+        }
     }
 
     private val pickTree = registerForActivityResult(
@@ -169,19 +199,19 @@ class MainActivity : ComponentActivity() {
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            outputTree = uri
+            mainViewModel?.outputTree = uri
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
+            val vm: MainViewModel = viewModel()
+            mainViewModel = vm
+
             MaterialTheme {
                 val scope = rememberCoroutineScope()
-                var log by remember { mutableStateOf("等待选择 PDF…") }
-                var isProcessing by remember { mutableStateOf(false) }
                 var showLogDialog by remember { mutableStateOf(false) }
-                val fullLogs = remember { mutableStateListOf<String>() }
 
                 Column(
                     modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -198,29 +228,29 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    Text("无损直出 · 体积优化 · 零 NDK 依赖")
+                    Text("无损直出 · 多核极速 · 防切屏/拔电重置")
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            enabled = !isProcessing,
+                            enabled = !vm.isProcessing,
                             onClick = { pickPdfs.launch(arrayOf("application/pdf")) }
                         ) { Text("选择 PDF") }
 
                         OutlinedButton(
-                            enabled = !isProcessing,
+                            enabled = !vm.isProcessing,
                             onClick = { pickTree.launch(null) }
                         ) { Text("输出目录") }
                     }
 
-                    Text("已选 PDF：${pdfs.size} 个")
-                    Text("输出路径：${outputTree ?: "未选择"}")
+                    Text("已选 PDF：${vm.pdfs.size} 个")
+                    Text("输出路径：${vm.outputTree ?: "未选择"}")
 
-                    if (pdfs.isNotEmpty()) {
+                    if (vm.pdfs.isNotEmpty()) {
                         LazyColumn(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            items(pdfs) { uri ->
+                            items(vm.pdfs) { uri ->
                                 Text(
                                     getFileName(uri) ?: uri.toString(),
                                     style = MaterialTheme.typography.bodyMedium
@@ -233,26 +263,27 @@ class MainActivity : ComponentActivity() {
 
                     Button(
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = pdfs.isNotEmpty() && outputTree != null && !isProcessing,
+                        enabled = vm.pdfs.isNotEmpty() && vm.outputTree != null && !vm.isProcessing,
                         onClick = {
-                            isProcessing = true
+                            vm.isProcessing = true
                             scope.launch(Dispatchers.IO) {
                                 convertPdfsToCbz(
+                                    vm = vm,
                                     onLog = { entry ->
-                                        scope.launch(Dispatchers.Main) { fullLogs.add(entry) }
+                                        scope.launch(Dispatchers.Main) { vm.fullLogs.add(entry) }
                                     },
                                     onProgress = { status ->
-                                        scope.launch(Dispatchers.Main) { log = status }
+                                        scope.launch(Dispatchers.Main) { vm.log = status }
                                     }
                                 )
-                                isProcessing = false
+                                vm.isProcessing = false
                             }
                         }
                     ) {
-                        Text(if (isProcessing) "正在转换中..." else "开始转换")
+                        Text(if (vm.isProcessing) "正在转换中..." else "开始转换")
                     }
 
-                    Text(log)
+                    Text(vm.log)
 
                     if (showLogDialog) {
                         AlertDialog(
@@ -261,7 +292,7 @@ class MainActivity : ComponentActivity() {
                             text = {
                                 SelectionContainer {
                                     LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
-                                        items(fullLogs) { line ->
+                                        items(vm.fullLogs) { line ->
                                             Text(line, style = MaterialTheme.typography.bodySmall)
                                         }
                                     }
@@ -290,29 +321,31 @@ class MainActivity : ComponentActivity() {
         return name
     }
 
+    // 极速字节对比提取 JPEG
     private fun extractRawJpegsFromPdf(pfd: FileDescriptor): List<ByteArray> {
         val images = mutableListOf<ByteArray>()
         try {
             FileInputStream(pfd).use { fis ->
                 val bytes = fis.readBytes()
-                var i = 0
                 val len = bytes.size
+                var i = 0
+                val bFF = 0xFF.toByte()
+                val bD8 = 0xD8.toByte()
+                val bD9 = 0xD9.toByte()
+
                 while (i < len - 3) {
-                    if ((bytes[i].toInt() and 0xFF) == 0xFF &&
-                        (bytes[i + 1].toInt() and 0xFF) == 0xD8 &&
-                        (bytes[i + 2].toInt() and 0xFF) == 0xFF) {
+                    if (bytes[i] == bFF && bytes[i + 1] == bD8 && bytes[i + 2] == bFF) {
                         val start = i
                         var j = i + 2
                         var end = -1
                         while (j < len - 1) {
-                            if ((bytes[j].toInt() and 0xFF) == 0xFF &&
-                                (bytes[j + 1].toInt() and 0xFF) == 0xD9) {
+                            if (bytes[j] == bFF && bytes[j + 1] == bD9) {
                                 end = j + 2
                                 break
                             }
                             j++
                         }
-                        if (end != -1 && (end - start) > 15000) {
+                        if (end != -1 && (end - start) > 10000) {
                             images.add(bytes.copyOfRange(start, end))
                             i = end - 1
                         }
@@ -340,10 +373,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun convertPdfsToCbz(
+        vm: MainViewModel,
         onLog: (String) -> Unit,
         onProgress: (String) -> Unit
     ) {
-        val targetTreeUri = outputTree ?: return
+        val targetTreeUri = vm.outputTree ?: return
         val docDir = DocumentFile.fromTreeUri(this, targetTreeUri) ?: run {
             onProgress("无法访问输出目录")
             return
@@ -359,8 +393,10 @@ class MainActivity : ComponentActivity() {
             onProgress(msg)
         }
 
-        val totalPdfs = pdfs.size
-        pdfs.forEachIndexed { index, pdfUri ->
+        val totalPdfs = vm.pdfs.size
+        val pdfList = vm.pdfs.toList()
+
+        pdfList.forEachIndexed { index, pdfUri ->
             val rawName = getFileName(pdfUri) ?: "document_$index.pdf"
             val baseName = rawName.substringBeforeLast(".")
             val cbzName = "$baseName.cbz"
@@ -384,7 +420,7 @@ class MainActivity : ComponentActivity() {
                 if (rawJpegs.isNotEmpty()) {
                     logAndProgress("⚡ [无损直通] 成功提取到 ${rawJpegs.size} 张原始 JPEG 图片...")
                     contentResolver.openOutputStream(targetFile.uri)?.use { os ->
-                        ZipOutputStream(os.buffered()).use { zipOut ->
+                        ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
                             rawJpegs.forEachIndexed { imgIdx, bytes ->
                                 val entryName = String.format("%04d.jpg", imgIdx + 1)
                                 writeZipStoredEntry(zipOut, bytes, entryName)
@@ -392,14 +428,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else {
-                    logAndProgress("🖼 [兼容模式] 未找到纯 JPEG 流，启用标准渲染...")
+                    logAndProgress("🖼 [兼容模式] 未找到纯 JPEG 流，启用高效率渲染...")
                     contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
                         PdfRenderer(pfd).use { renderer ->
                             contentResolver.openOutputStream(targetFile.uri)?.use { os ->
-                                ZipOutputStream(os.buffered()).use { zipOut ->
+                                ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
                                     val pageCount = renderer.pageCount
                                     for (i in 0 until pageCount) {
-                                        logAndProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
+                                        if (i % 3 == 0 || i == pageCount - 1) {
+                                            logAndProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
+                                        }
 
                                         renderer.openPage(i).use { page ->
                                             val targetWidth = 1440f
