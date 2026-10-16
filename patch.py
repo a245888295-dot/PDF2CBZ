@@ -189,7 +189,9 @@ import java.util.Locale
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import com.tom_roush.pdfbox.contentstream.operator.Operator
 import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.pdfparser.PDFStreamParser
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
@@ -851,6 +853,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 内容流里是否真的在画文字(BT/Tj/TJ) —— 解析失败就保守当有文字。 */
+    private fun pageShowsText(page: PDPage): Boolean = try {
+        PDFStreamParser(page).parse().any { t ->
+            t is Operator && (
+                t.name == "BT" || t.name == "Tj" || t.name == "TJ" ||
+                    t.name == "'" || t.name == "\""
+                )
+        }
+    } catch (e: Exception) {
+        true
+    }
+
     /**
      * 单页无损直通判定: 只有「这一页就是一张整幅图」时才返回字节,其余一律 null 交渲染 ——
      *  - 页面用了字体(有文字)          → 直通会把字丢掉
@@ -865,8 +879,11 @@ class MainActivity : ComponentActivity() {
         onLog: (String) -> Unit
     ): Pair<String, ByteArray>? {
         val res = page.resources ?: return null
-        if (res.fontNames.any()) {
-            onLog("第 $pageNo 页: 含文字, 交渲染")
+        // 注意: 不能只看「页面资源里有字体」—— 有些 PDF 里字体对象是没人引用的残留
+        // (实测某漫画 PDF 有 30 个字体对象, 但 /Resources 里根本没有 /Font)。
+        // 只有内容流**真的在画文字**(BT/Tj/TJ)才交渲染, 否则白丢字节级无损。
+        if (res.fontNames.any() && pageShowsText(page)) {
+            onLog("第 $pageNo 页: 内容流在画文字, 交渲染")
             return null
         }
         var best: PDImageXObject? = null
