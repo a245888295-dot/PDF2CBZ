@@ -146,6 +146,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -199,15 +200,58 @@ class MainViewModel : ViewModel() {
     val fullLogs = mutableStateListOf<String>()
 }
 
+/**
+ * v3.3 DSH: 自定义「选择 PDF」契约。
+ * 标准 OpenMultipleDocuments 的 createIntent 是 final override,无法注入初始目录,
+ * 于是它永远跟随系统 DocumentsUI 的「上次位置」—— 表现为「选 PDF」和「选输出目录」
+ * 两个选择器互相带跑(用户反馈的"绑定在一起")。这里自己实现以支持指定打开位置。
+ */
+private class PickPdfsContract : ActivityResultContract<Uri?, List<Uri>>() {
+    override fun createIntent(context: Context, input: Uri?): Intent {
+        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf"))
+            if (input != null) {
+                // 传上次选中的 PDF 文件 URI,选择器会定位到它所在目录并选中它
+                putExtra("android.provider.extra.INITIAL_URI", input)
+            }
+        }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> {
+        if (resultCode != android.app.Activity.RESULT_OK || intent == null) return emptyList()
+        val clip = intent.clipData
+        return if (clip != null) {
+            (0 until clip.itemCount).mapNotNull { clip.getItemAt(it)?.uri }
+        } else {
+            listOfNotNull(intent.data)
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private var mainViewModel: MainViewModel? = null
 
-    private val pickPdfs = registerForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
+    /** v3.3 DSH: 两个选择器各自记住自己的位置,互不干扰。 */
+    private var lastPdfUriOrDir: Uri? = null
+    private var lastOutputDir: Uri? = null
+
+    private fun prefs() = getSharedPreferences("pdf2cbz_dsh", Context.MODE_PRIVATE)
+
+    private val pickPdfs = registerForActivityResult(PickPdfsContract()) { uris ->
         mainViewModel?.let { vm ->
             vm.pdfs.clear()
             vm.pdfs.addAll(uris.filter { it.toString().isNotBlank() })
+            // 记住本次选中的 PDF 文件(下次选择器定点到它所在目录,不跟随输出目录)
+            uris.firstOrNull()?.let { u ->
+                lastPdfUriOrDir = u
+                try {
+                    prefs().edit().putString("last_pdf_uri", u.toString()).apply()
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -229,6 +273,11 @@ class MainActivity : ComponentActivity() {
                 mainViewModel?.fullLogs?.add("[警告] 保存输出目录时出错(已忽略): ${e.localizedMessage}")
             }
             mainViewModel?.outputTree = uri
+            lastOutputDir = uri
+            try {
+                prefs().edit().putString("last_out_dir", uri.toString()).apply()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -261,7 +310,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
-        appendPersistentLog("[启动] PDF2CBZ v3.2.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        appendPersistentLog("[启动] PDF2CBZ v3.3.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        // v3.3 DSH: 恢复上次的两个位置(各自独立)
+        try {
+            lastPdfUriOrDir = prefs().getString("last_pdf_uri", null)?.let { Uri.parse(it) }
+            lastOutputDir = prefs().getString("last_out_dir", null)?.let { Uri.parse(it) }
+        } catch (_: Exception) {
+        }
         setContent {
             val vm: MainViewModel = viewModel()
             mainViewModel = vm
@@ -281,6 +336,28 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val scope = rememberCoroutineScope()
+                    // v3.3 DSH: 启动时尝试恢复上次的输出目录(ROM 不支持持久权限时提示重选)
+                    LaunchedEffect(Unit) {
+                        val saved = try {
+                            prefs().getString("last_out_dir", null)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (saved != null && vm.outputTree == null) {
+                            val u = Uri.parse(saved)
+                            val granted = try {
+                                contentResolver.persistedUriPermissions.any { it.uri == u && it.isWritePermission }
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (granted) {
+                                vm.outputTree = u
+                                vm.fullLogs.add("[恢复] 已恢复上次的输出目录")
+                            } else {
+                                vm.fullLogs.add("[提示] 上次的输出目录权限已失效,请重新选择")
+                            }
+                        }
+                    }
                     var showLogDialog by remember { mutableStateOf(false) }
                     var showSettingsDialog by remember { mutableStateOf(false) }
                     var showAboutDialog by remember { mutableStateOf(false) }
@@ -310,7 +387,7 @@ class MainActivity : ComponentActivity() {
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = !vm.isProcessing) { pickPdfs.launch(arrayOf("application/pdf")) }
+                                .clickable(enabled = !vm.isProcessing) { pickPdfs.launch(lastPdfUriOrDir) }
                         ) {
                             Column(modifier = Modifier.padding(20.dp)) {
                                 Text(
@@ -334,7 +411,7 @@ class MainActivity : ComponentActivity() {
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = !vm.isProcessing) { pickTree.launch(null) }
+                                .clickable(enabled = !vm.isProcessing) { pickTree.launch(lastOutputDir) }
                         ) {
                             Column(modifier = Modifier.padding(20.dp)) {
                                 Text(
@@ -520,7 +597,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("ℹ️ 关于 PDF2CBZ") },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.2.0-dsh (DSH Edition · 修 tree URI 闪退 + 日志一键复制/导出)", fontSize = 14.sp)
+                                    Text("• 版本：v3.3.0-dsh (DSH Edition · 输入/输出位置各自独立记忆)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -815,8 +892,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.2.0-dsh"
-DSH_VERSION_CODE = 320
+DSH_VERSION_NAME = "3.3.0-dsh"
+DSH_VERSION_CODE = 330
 
 def patch_version():
     for r, _, fs in os.walk('.'):
