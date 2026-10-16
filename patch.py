@@ -98,6 +98,7 @@ def patch_build_gradle():
         'implementation("androidx.activity:activity-compose:1.9.0")',
         'implementation("androidx.documentfile:documentfile:1.0.1")',
         'implementation("androidx.compose.material3:material3:1.2.1")',
+        'implementation("androidx.compose.material:material-icons-extended:1.6.8")',
         'implementation("androidx.compose.ui:ui:1.6.8")',
         'implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")',
         'implementation("com.tom-roush:pdfbox-android:2.0.27.0")'
@@ -148,7 +149,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -182,7 +189,9 @@ import java.util.Locale
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 
 enum class QualityMode(val title: String, val desc: String) {
@@ -310,7 +319,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
-        appendPersistentLog("[启动] PDF2CBZ v3.3.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        appendPersistentLog("[启动] PDF2CBZ v3.4.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
         // v3.3 DSH: 恢复上次的两个位置(各自独立)
         try {
             lastPdfUriOrDir = prefs().getString("last_pdf_uri", null)?.let { Uri.parse(it) }
@@ -322,12 +331,14 @@ class MainActivity : ComponentActivity() {
             mainViewModel = vm
 
             val darkColorScheme = darkColorScheme(
-                background = ComposeColor(0xFF121212),
-                surface = ComposeColor(0xFF1E1E1E),
-                surfaceVariant = ComposeColor(0xFF2A2A2A),
-                primary = ComposeColor(0xFF80D8FF),
-                onBackground = ComposeColor(0xFFEEEEEE),
-                onSurface = ComposeColor(0xFFFFFFFF)
+                background = ComposeColor(0xFF0E1116),
+                surface = ComposeColor(0xFF141821),
+                surfaceVariant = ComposeColor(0xFF232833),
+                primary = ComposeColor(0xFF7DD3FC),
+                onBackground = ComposeColor(0xFFECF1F8),
+                onSurface = ComposeColor(0xFFF5F8FC),
+                onSurfaceVariant = ComposeColor(0xFF9BA6B8),
+                outline = ComposeColor(0xFF3A4150)
             )
 
             MaterialTheme(colorScheme = darkColorScheme) {
@@ -365,94 +376,138 @@ class MainActivity : ComponentActivity() {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 20.dp, vertical = 24.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .padding(horizontal = 18.dp)
                     ) {
-                        // 顶栏标题
+                        // ── 顶部品牌栏（Material 3，去 emoji）────────────────
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 18.dp, bottom = 16.dp)
                         ) {
-                            Text(
-                                text = "🐱 PDF2CBZ",
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onBackground
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "PDF → CBZ",
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Text(
+                                    text = "原生无损直通 · 逐页判定",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { showLogDialog = true }) {
+                                Icon(Icons.Outlined.Description, contentDescription = "日志")
+                            }
+                            IconButton(onClick = { showSettingsDialog = true }) {
+                                Icon(Icons.Outlined.Tune, contentDescription = "设置")
+                            }
+                            IconButton(onClick = { showAboutDialog = true }) {
+                                Icon(Icons.Outlined.Info, contentDescription = "关于")
+                            }
+                        }
+
+                        // ── 步骤 1：选择 PDF ─────────────────────────────
+                        SourceCard(
+                            icon = Icons.Outlined.PictureAsPdf,
+                            step = "1",
+                            title = if (vm.pdfs.isEmpty()) "选择 PDF 文件" else "已选 ${vm.pdfs.size} 个 PDF",
+                            subtitle = if (vm.pdfs.isEmpty()) "可多选" else "点击重新选择",
+                            enabled = !vm.isProcessing
+                        ) {
+                            // v3.4 DSH: 记下我们传给选择器的初始位置 —— 某些 ROM 的
+                            // DocumentsUI 会忽略 EXTRA_INITIAL_URI，日志里能直接看出来。
+                            vm.fullLogs.add(
+                                "[选择] PDF 选择器,初始位置: " +
+                                    (lastPdfUriOrDir?.let { getFileName(it) ?: it.toString() } ?: "无")
                             )
+                            pickPdfs.launch(lastPdfUriOrDir)
                         }
 
-                        // 卡片 1：选择 PDF
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !vm.isProcessing) { pickPdfs.launch(lastPdfUriOrDir) }
-                        ) {
-                            Column(modifier = Modifier.padding(20.dp)) {
-                                Text(
-                                    text = if (vm.pdfs.isEmpty()) "未选择文件" else "已选 ${vm.pdfs.size} 个 PDF",
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = if (vm.pdfs.isEmpty()) "点击选择要转换的 PDF" else "点击重新选择文件",
-                                    fontSize = 13.sp,
-                                    color = ComposeColor.Gray
-                                )
+                        if (vm.pdfs.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                vm.pdfs.take(3).forEach { u ->
+                                    SelectedFileRow(getFileName(u) ?: u.toString())
+                                }
+                                if (vm.pdfs.size > 3) {
+                                    Text(
+                                        text = "…另外 ${vm.pdfs.size - 3} 个文件",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = 42.dp)
+                                    )
+                                }
                             }
                         }
 
-                        // 卡片 2：输出目录
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !vm.isProcessing) { pickTree.launch(lastOutputDir) }
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // ── 步骤 2：输出目录 ─────────────────────────────
+                        SourceCard(
+                            icon = Icons.Outlined.FolderOpen,
+                            step = "2",
+                            title = "输出目录",
+                            subtitle = vm.outputTree?.let { getFileName(it) ?: it.toString() }
+                                ?: "未设置 · 点击选择存储位置",
+                            enabled = !vm.isProcessing
                         ) {
-                            Column(modifier = Modifier.padding(20.dp)) {
-                                Text(
-                                    text = "输出目录",
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = vm.outputTree?.let { getFileName(it) ?: it.toString() } ?: "未设置 (点击指定存储路径)",
-                                    fontSize = 13.sp,
-                                    color = ComposeColor.Gray,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            vm.fullLogs.add(
+                                "[选择] 输出目录选择器,初始位置: " +
+                                    (lastOutputDir?.let { getFileName(it) ?: it.toString() } ?: "无")
+                            )
+                            pickTree.launch(lastOutputDir)
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // ── 步骤 3：画质模式 ─────────────────────────────
+                        Text(
+                            text = "画质模式",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            QualityMode.values().forEach { mode ->
+                                FilterChip(
+                                    selected = vm.qualityMode == mode,
+                                    onClick = { vm.qualityMode = mode },
+                                    enabled = !vm.isProcessing,
+                                    label = { Text(mode.title, fontSize = 13.sp) }
                                 )
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // 菜单列表选项
-                        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                            MenuRow(icon = "📋", title = "日志") { showLogDialog = true }
-                            MenuRow(icon = "⚙️", title = "设置") { showSettingsDialog = true }
-                            MenuRow(icon = "ℹ️", title = "关于") { showAboutDialog = true }
-                        }
+                        Text(
+                            text = vm.qualityMode.desc,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                        )
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // 状态提示文字
+                        // ── 状态与进度 ──────────────────────────────────
+                        if (vm.isProcessing) {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 10.dp)
+                            )
+                        }
                         Text(
                             text = vm.log,
-                            fontSize = 13.sp,
-                            color = ComposeColor.LightGray,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 4.dp)
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
                         )
 
-                        // 底部“开始转换”大按钮
+                        // ── 主按钮 ─────────────────────────────────────
                         Button(
                             onClick = {
                                 vm.isProcessing = true
@@ -470,17 +525,27 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             enabled = vm.pdfs.isNotEmpty() && vm.outputTree != null && !vm.isProcessing,
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
+                                .height(54.dp)
                         ) {
+                            Icon(
+                                imageVector = if (vm.isProcessing) {
+                                    Icons.Outlined.HourglassEmpty
+                                } else {
+                                    Icons.Outlined.PlayArrow
+                                },
+                                contentDescription = null
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (vm.isProcessing) "正在转换中..." else "开始转换",
+                                text = if (vm.isProcessing) "正在转换…" else "开始转换",
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
+                        Spacer(modifier = Modifier.height(18.dp))
                     }
 
                     // --- 弹窗 1：日志 ---
@@ -507,7 +572,7 @@ class MainActivity : ComponentActivity() {
                         }
                         AlertDialog(
                             onDismissRequest = { showLogDialog = false },
-                            title = { Text("📋 运行日志") },
+                            title = { Text("运行日志", fontWeight = FontWeight.SemiBold) },
                             text = {
                                 Column(
                                     modifier = Modifier
@@ -527,7 +592,7 @@ class MainActivity : ComponentActivity() {
                                     try {
                                         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                         cm.setPrimaryClip(ClipData.newPlainText("PDF2CBZ 日志", fullLogText))
-                                        vm.log = "✅ 日志已复制到剪贴板"
+                                        vm.log = "日志已复制到剪贴板"
                                     } catch (e: Exception) {
                                         vm.log = "复制失败: ${e.localizedMessage}"
                                     }
@@ -542,7 +607,7 @@ class MainActivity : ComponentActivity() {
                                             val dir = getExternalFilesDir(null)
                                             val f = java.io.File(dir, "pdf2cbz_log_export.txt")
                                             f.writeText(fullLogText)
-                                            vm.log = "✅ 已导出: ${f.absolutePath}"
+                                            vm.log = "已导出: ${f.absolutePath}"
                                             appendPersistentLog("[导出] 日志已导出到 ${f.absolutePath}")
                                         } catch (e: Exception) {
                                             vm.log = "导出失败: ${e.localizedMessage}"
@@ -559,7 +624,7 @@ class MainActivity : ComponentActivity() {
                     if (showSettingsDialog) {
                         AlertDialog(
                             onDismissRequest = { showSettingsDialog = false },
-                            title = { Text("⚙️ 设置") },
+                            title = { Text("设置", fontWeight = FontWeight.SemiBold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text("画质与清晰度选项：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -594,10 +659,10 @@ class MainActivity : ComponentActivity() {
                     if (showAboutDialog) {
                         AlertDialog(
                             onDismissRequest = { showAboutDialog = false },
-                            title = { Text("ℹ️ 关于 PDF2CBZ") },
+                            title = { Text("关于 PDF2CBZ", fontWeight = FontWeight.SemiBold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.3.0-dsh (DSH Edition · 输入/输出位置各自独立记忆)", fontSize = 14.sp)
+                                    Text("• 版本：v3.4.0-dsh (DSH Edition · 修复 CBZ 内图片损坏 + 输入/输出位置各自独立记忆)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -621,22 +686,95 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** v3.4 DSH: 步骤卡片 —— 图标 + 步骤号 + 标题 + 说明，替换原来的 emoji 卡片。 */
     @Composable
-    private fun MenuRow(icon: String, title: String, onClick: () -> Unit) {
+    private fun SourceCard(
+        icon: ImageVector,
+        step: String,
+        title: String,
+        subtitle: String,
+        enabled: Boolean,
+        onClick: () -> Unit
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled) { onClick() }
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = subtitle,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = step,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+
+    /** v3.4 DSH: 已选文件的一行。 */
+    @Composable
+    private fun SelectedFileRow(name: String) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onClick() }
-                .padding(vertical = 6.dp, horizontal = 4.dp)
+                .padding(start = 4.dp)
         ) {
-            Text(text = icon, fontSize = 20.sp)
-            Spacer(modifier = Modifier.width(16.dp))
+            Icon(
+                imageVector = Icons.Outlined.Description,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
-                text = title,
-            fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onBackground
+                text = name,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -678,70 +816,118 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * DSH v3.0 原生无损提取:按 PDF 结构逐页遍历图像对象(PdfBox),
-     * 每页取面积最大的非 mask 图像作为页面主图。
+     * v3.4 DSH: **逐页**判定能不能无损直通。返回 list 第 i 项 = 第 i 页产出(扩展名 to 字节);
+     * null = 这一页不能直通,必须交 PdfRenderer 渲染。
      *
-     * - DCTDecode(JPEG):createRawInputStream 零解码直通,得到原始 JPEG 字节;
-     * - Flate/LZW/RLE 位图:解码为 Bitmap 后写无损 PNG;
-     * - JPX/JBIG2/CCITT、缺图页、异常:返回 null,由 PdfRenderer 渲染兜底。
-     *
-     * 返回 null 表示「不适合直通」,调用方必须走渲染路径 —— 宁可重编码也不漏页。
+     * 为什么不"要么全直通、要么全渲染": 一个 PDF 里常混着「整页单图」和「带文字/多图」的页。
+     * 前者直通是字节级无损(原始 JPEG 原样进 CBZ),后者直通会丢内容 —— 按页分别处理,
+     * 才能既保住无损、又不丢东西。整份返回 null 只表示「这份 PDF 解析不了」。
      */
     private fun extractNativePages(
         pfd: FileDescriptor,
         onLog: (String) -> Unit
-    ): List<Pair<String, ByteArray>>? {
-        val pages = mutableListOf<Pair<String, ByteArray>>()
+    ): List<Pair<String, ByteArray>?>? {
+        val pages = mutableListOf<Pair<String, ByteArray>?>()
         return try {
             FileInputStream(pfd).use { fis ->
                 PDDocument.load(fis).use { doc ->
-                    val pageCount = doc.numberOfPages
-                    for (i in 0 until pageCount) {
-                        val page = doc.getPage(i)
-                        val res = page.resources ?: return null
-
-                        var best: PDImageXObject? = null
-                        var bestArea = 0
-                        for (name in res.xObjectNames) {
-                            val xo = try {
-                                res.getXObject(name)
-                            } catch (e: Exception) {
-                                null
-                            }
-                            if (xo is PDImageXObject && !xo.isStencil) {
-                                val area = xo.width * xo.height
-                                if (area > bestArea) {
-                                    bestArea = area
-                                    best = xo
-                                }
-                            }
-                        }
-
-                        val img = best ?: return null
-                        when (img.suffix) {
-                            "jpg" -> {
-                                // 零解码直通:原始 JPEG 字节直接进 CBZ
-                                val raw = img.cosObject.createRawInputStream().use { it.readBytes() }
-                                pages.add("jpg" to raw)
-                            }
-                            "png" -> {
-                                // Flate/LZW/RLE 位图:解码后写无损 PNG
-                                val bmp = img.image
-                                val bos = ByteArrayOutputStream()
-                                bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
-                                bmp.recycle()
-                                pages.add("png" to bos.toByteArray())
-                            }
-                            else -> return null
-                        }
+                    var passthrough = 0
+                    var needRender = 0
+                    for (i in 0 until doc.numberOfPages) {
+                        val out = extractSinglePage(doc.getPage(i), i + 1, onLog)
+                        if (out == null) needRender++ else passthrough++
+                        pages.add(out)
                     }
-                    onLog("已解析 $pageCount 页,全部命中可无损直通的图像编码")
+                    onLog(
+                        "已解析 ${doc.numberOfPages} 页: 无损直通 $passthrough 页" +
+                            (if (needRender > 0) ", 需渲染 $needRender 页(含文字/矢量/多图)" else "")
+                    )
                 }
             }
             pages
         } catch (e: Exception) {
-            onLog("原生提取异常,回退渲染: ${e.localizedMessage}")
+            onLog("原生提取异常,回退整体渲染: ${e.localizedMessage}")
             null
+        }
+    }
+
+    /**
+     * 单页无损直通判定: 只有「这一页就是一张整幅图」时才返回字节,其余一律 null 交渲染 ——
+     *  - 页面用了字体(有文字)          → 直通会把字丢掉
+     *  - 页面有非图像 XObject(表单/组) → 可能有叠加内容
+     *  - 页面图像不止一张              → 是拼版页
+     *  - 图像带 /SMask(软蒙版)         → 直通会丢透明信息
+     *  - 滤镜解完不是合法 JPEG/PNG 头  → 宁可不直通,也不写坏图
+     */
+    private fun extractSinglePage(
+        page: PDPage,
+        pageNo: Int,
+        onLog: (String) -> Unit
+    ): Pair<String, ByteArray>? {
+        val res = page.resources ?: return null
+        if (res.fontNames.any()) {
+            onLog("第 $pageNo 页: 含文字, 交渲染")
+            return null
+        }
+        var best: PDImageXObject? = null
+        var bestArea = 0
+        var imageCount = 0
+        for (name in res.xObjectNames) {
+            val xo = try {
+                res.getXObject(name)
+            } catch (e: Exception) {
+                null
+            }
+            if (xo is PDImageXObject) {
+                if (!xo.isStencil) {
+                    imageCount++
+                    val area = xo.width * xo.height
+                    if (area > bestArea) {
+                        bestArea = area
+                        best = xo
+                    }
+                }
+            } else {
+                onLog("第 $pageNo 页: 含矢量/表单对象, 交渲染")
+                return null
+            }
+        }
+        if (imageCount != 1) {
+            if (imageCount > 1) onLog("第 $pageNo 页: 多图拼版, 交渲染")
+            return null
+        }
+        val img = best ?: return null
+        if (img.cosObject.getDictionaryObject(COSName.SMASK) != null) {
+            onLog("第 $pageNo 页: 图像带透明蒙版, 交渲染")
+            return null
+        }
+        return when (img.suffix) {
+            "jpg" -> {
+                // v3.4 DSH 修复(坏图 bug): 以前用 cosObject.createRawInputStream() —— 它给的是
+                // **未解滤镜**的存储字节。夸克/微信导出的漫画 PDF 常见
+                // `/Filter [ /ASCII85Decode /DCTDecode ]`,于是把 ASCII85 文本当 JPEG 写进 CBZ
+                // (实测 29/29 页全坏, 文件头是 `s4IA0!` 而不是 `FFD8`)。
+                // PDStream.createInputStream(stopFilters) 会解掉非图像滤镜、到 DCTDecode 停下;
+                // 若第一个滤镜就是 DCTDecode,直接返回原始字节 —— 两种 PDF 都覆盖。
+                val raw = img.createInputStream(listOf("DCTDecode")).use { it.readBytes() }
+                if (raw.size < 4 || raw[0] != 0xFF.toByte() || raw[1] != 0xD8.toByte()) {
+                    onLog("第 $pageNo 页: 直通字节不是 JPEG 头, 交渲染")
+                    return null
+                }
+                "jpg" to raw
+            }
+            "png" -> {
+                // Flate/LZW/RLE 位图: 解码后写无损 PNG(像素级无损)
+                val bmp = img.image
+                val bos = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+                // 不要 recycle(): PdfBox 会缓存这份位图(cachedImage),回收后再被别的页取用会崩
+                "png" to bos.toByteArray()
+            }
+            else -> {
+                onLog("第 $pageNo 页: 图像编码 ${img.suffix} 不支持直通, 交渲染")
+                null
+            }
         }
     }
 
@@ -756,6 +942,45 @@ class MainActivity : ComponentActivity() {
         zipOut.putNextEntry(entry)
         zipOut.write(bytes)
         zipOut.closeEntry()
+    }
+
+    /**
+     * v3.4 DSH: 渲染单页写进 CBZ。
+     * ADAPTIVE/NATIVE 用 PNG —— 渲染本身已经是一次栅格化,不给它再叠一层 JPEG 损失;
+     * LOW 档用 JPEG 60(体积优先)。渲染模式用 FOR_PRINT,文字/线条更清楚。
+     */
+    private fun writeRenderedPage(
+        renderer: PdfRenderer,
+        index: Int,
+        quality: QualityMode,
+        zipOut: ZipOutputStream
+    ) {
+        renderer.openPage(index).use { page ->
+            val targetWidth = when (quality) {
+                QualityMode.NATIVE -> 1800f
+                QualityMode.ADAPTIVE -> 1440f
+                QualityMode.LOW -> 1080f
+            }
+            val scale = if (page.width > 0) (targetWidth / page.width).coerceIn(1.0f, 2.0f) else 1.5f
+            val bitmap = Bitmap.createBitmap(
+                (page.width * scale).toInt(),
+                (page.height * scale).toInt(),
+                Bitmap.Config.ARGB_8888
+            )
+            bitmap.eraseColor(Color.WHITE)
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+
+            val stream = ByteArrayOutputStream()
+            val lossless = quality != QualityMode.LOW
+            if (lossless) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            } else {
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
+            }
+            bitmap.recycle()
+            val ext = if (lossless) "png" else "jpg"
+            writeZipStoredEntry(zipOut, stream.toByteArray(), String.format("%04d.%s", index + 1, ext))
+        }
     }
 
     private suspend fun convertPdfsToCbz(
@@ -799,7 +1024,7 @@ class MainActivity : ComponentActivity() {
             }
 
             try {
-                var nativePages: List<Pair<String, ByteArray>>? = null
+                var nativePages: List<Pair<String, ByteArray>?>? = null
 
                 // v3.0 DSH: 自适应模式优先走「按 PDF 结构逐页原生无损提取」
                 if (currentQuality == QualityMode.ADAPTIVE) {
@@ -808,19 +1033,34 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (nativePages != null && nativePages!!.isNotEmpty()) {
-                    val extracted = nativePages!!
-                    logAndProgress("⚡ [原生无损] 逐页提取成功,共 ${extracted.size} 页原始图像")
-                    contentResolver.openOutputStream(targetFile.uri)?.use { os ->
-                        ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
-                            extracted.forEachIndexed { imgIdx, pair ->
-                                val entryName = String.format("%04d.%s", imgIdx + 1, pair.first)
-                                writeZipStoredEntry(zipOut, pair.second, entryName)
+                val extracted = nativePages
+                if (extracted != null && extracted.isNotEmpty() && extracted.any { it != null }) {
+                    // v3.4 DSH: 混合输出 —— 能直通的页原样写入(字节级无损),
+                    // 不能直通的页现场渲染(不丢内容)。
+                    logAndProgress(
+                        "⚡ [原生无损] 共 ${extracted.size} 页: 原始图像直通 ${extracted.count { it != null }} 页"
+                    )
+                    contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
+                        PdfRenderer(pfd).use { renderer ->
+                            contentResolver.openOutputStream(targetFile.uri)?.use { os ->
+                                ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
+                                    extracted.forEachIndexed { imgIdx, pair ->
+                                        if (pair != null) {
+                                            writeZipStoredEntry(
+                                                zipOut,
+                                                pair.second,
+                                                String.format("%04d.%s", imgIdx + 1, pair.first)
+                                            )
+                                        } else {
+                                            writeRenderedPage(renderer, imgIdx, currentQuality, zipOut)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 } else {
-                    logAndProgress("🖼 [高清渲染] 正在多核渲染图片...")
+                    logAndProgress("[高清渲染] 正在逐页渲染...")
                     contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
                         PdfRenderer(pfd).use { renderer ->
                             contentResolver.openOutputStream(targetFile.uri)?.use { os ->
@@ -830,36 +1070,7 @@ class MainActivity : ComponentActivity() {
                                         if (i % 3 == 0 || i == pageCount - 1) {
                                             logAndProgress("正在转换 (${index + 1}/$totalPdfs): $rawName [页码 ${i + 1}/$pageCount]")
                                         }
-
-                                        renderer.openPage(i).use { page ->
-                                            val (targetWidth, compressQuality) = when (currentQuality) {
-                                                QualityMode.NATIVE -> 1800f to 90
-                                                QualityMode.ADAPTIVE -> 1440f to 80
-                                                QualityMode.LOW -> 1080f to 60
-                                            }
-
-                                            val scale = if (page.width > 0) (targetWidth / page.width).coerceIn(1.0f, 2.0f) else 1.5f
-                                            val bitmap = Bitmap.createBitmap(
-                                                (page.width * scale).toInt(),
-                                                (page.height * scale).toInt(),
-                                                Bitmap.Config.ARGB_8888
-                                            )
-                                            bitmap.eraseColor(Color.WHITE)
-                                            page.render(
-                                                bitmap,
-                                                null,
-                                                null,
-                                                PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
-                                            )
-
-                                            val stream = ByteArrayOutputStream()
-                                            bitmap.compress(Bitmap.CompressFormat.JPEG, compressQuality, stream)
-                                            val imageBytes = stream.toByteArray()
-                                            bitmap.recycle()
-
-                                            val entryName = String.format("%04d.jpg", i + 1)
-                                            writeZipStoredEntry(zipOut, imageBytes, entryName)
-                                        }
+                                        writeRenderedPage(renderer, i, currentQuality, zipOut)
                                     }
                                 }
                             }
@@ -892,8 +1103,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.3.0-dsh"
-DSH_VERSION_CODE = 330
+DSH_VERSION_NAME = "3.4.0-dsh"
+DSH_VERSION_CODE = 340
 
 def patch_version():
     for r, _, fs in os.walk('.'):
