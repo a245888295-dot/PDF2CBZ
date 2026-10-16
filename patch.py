@@ -151,8 +151,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -256,7 +261,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
-        appendPersistentLog("[启动] PDF2CBZ v3.1.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        appendPersistentLog("[启动] PDF2CBZ v3.2.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
         setContent {
             val vm: MainViewModel = viewModel()
             mainViewModel = vm
@@ -411,32 +416,64 @@ class MainActivity : ComponentActivity() {
                                 ""
                             }
                         }
+                        // v3.2 DSH 修复闪退②: 原实现用 SelectionContainer 包 LazyColumn,
+                        // 长按拖选文本时 Compose 选区管理器算方向越界 -> 崩溃(用户"复制日志就崩")。
+                        // 现在改成单个可滚动文本块 + 一键复制/导出,不再需要手动拖选。
+                        val fullLogText = buildString {
+                            appendLine("=== 本次运行日志 ===")
+                            if (vm.fullLogs.isEmpty()) appendLine("(暂无)") else vm.fullLogs.forEach { appendLine(it) }
+                            if (diskLog.isNotBlank()) {
+                                appendLine()
+                                appendLine("=== 历史记录(含崩溃堆栈) ===")
+                                append(diskLog)
+                            }
+                        }
                         AlertDialog(
                             onDismissRequest = { showLogDialog = false },
                             title = { Text("📋 运行日志") },
                             text = {
-                                SelectionContainer {
-                                    LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                                        items(vm.fullLogs) { line ->
-                                            Text(line, fontSize = 12.sp, color = ComposeColor.LightGray)
-                                        }
-                                        if (diskLog.isNotBlank()) {
-                                            item {
-                                                Text(
-                                                    "—— 历史记录(含崩溃)——",
-                                                    fontSize = 12.sp,
-                                                    color = ComposeColor(0xFFFFAB40)
-                                                )
-                                            }
-                                            items(diskLog.split("\n")) { line ->
-                                                Text(line, fontSize = 11.sp, color = ComposeColor.Gray)
-                                            }
-                                        }
-                                    }
+                                Column(
+                                    modifier = Modifier
+                                        .heightIn(max = 320.dp)
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        text = fullLogText,
+                                        fontSize = 11.sp,
+                                        color = ComposeColor.LightGray
+                                    )
                                 }
                             },
                             confirmButton = {
-                                TextButton(onClick = { showLogDialog = false }) { Text("关闭") }
+                                TextButton(onClick = {
+                                    // 一键复制全部日志
+                                    try {
+                                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        cm.setPrimaryClip(ClipData.newPlainText("PDF2CBZ 日志", fullLogText))
+                                        vm.log = "✅ 日志已复制到剪贴板"
+                                    } catch (e: Exception) {
+                                        vm.log = "复制失败: ${e.localizedMessage}"
+                                    }
+                                    showLogDialog = false
+                                }) { Text("复制全部") }
+                            },
+                            dismissButton = {
+                                Row {
+                                    TextButton(onClick = {
+                                        // 一键导出为文件(应用外部私有目录,文件管理器可访问)
+                                        try {
+                                            val dir = getExternalFilesDir(null)
+                                            val f = java.io.File(dir, "pdf2cbz_log_export.txt")
+                                            f.writeText(fullLogText)
+                                            vm.log = "✅ 已导出: ${f.absolutePath}"
+                                            appendPersistentLog("[导出] 日志已导出到 ${f.absolutePath}")
+                                        } catch (e: Exception) {
+                                            vm.log = "导出失败: ${e.localizedMessage}"
+                                        }
+                                        showLogDialog = false
+                                    }) { Text("导出文件") }
+                                    TextButton(onClick = { showLogDialog = false }) { Text("关闭") }
+                                }
                             }
                         )
                     }
@@ -483,7 +520,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("ℹ️ 关于 PDF2CBZ") },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.1.0-dsh (DSH Edition · PdfBox 原生无损 + 崩溃日志)", fontSize = 14.sp)
+                                    Text("• 版本：v3.2.0-dsh (DSH Edition · 修 tree URI 闪退 + 日志一键复制/导出)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -527,15 +564,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * v3.2 DSH 修复闪退①: 原实现对 tree: URI 调 ContentResolver.query,
+     * 系统抛 UnsupportedOperationException,而它在 Compose 渲染期被调用 -> 界面直接崩。
+     * 现在 tree URI 走 DocumentFile,且全程兜底,任何解析失败都退回显示 URI 本身。
+     */
     private fun getFileName(uri: Uri): String? {
-        var name: String? = null
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (nameIndex != -1 && cursor.moveToFirst()) {
-                name = cursor.getString(nameIndex)
+        return try {
+            var name: String? = null
+            try {
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1 && cursor.moveToFirst()) {
+                        name = cursor.getString(nameIndex)
+                    }
+                }
+            } catch (_: Exception) {
+                // tree: URI 不支持 query,交给下面的 DocumentFile 分支
             }
+            if (name.isNullOrBlank()) {
+                name = try {
+                    DocumentFile.fromTreeUri(this, uri)?.name
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (name.isNullOrBlank()) {
+                name = uri.lastPathSegment
+                    ?.substringAfterLast('/')
+                    ?.substringAfterLast(':')
+            }
+            name?.takeIf { it.isNotBlank() } ?: uri.toString()
+        } catch (_: Exception) {
+            uri.toString()
         }
-        return name
     }
 
     /**
@@ -753,8 +815,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.1.0-dsh"
-DSH_VERSION_CODE = 310
+DSH_VERSION_NAME = "3.2.0-dsh"
+DSH_VERSION_CODE = 320
 
 def patch_version():
     for r, _, fs in os.walk('.'):
