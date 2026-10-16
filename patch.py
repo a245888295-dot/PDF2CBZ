@@ -99,7 +99,8 @@ def patch_build_gradle():
         'implementation("androidx.documentfile:documentfile:1.0.1")',
         'implementation("androidx.compose.material3:material3:1.2.1")',
         'implementation("androidx.compose.ui:ui:1.6.8")',
-        'implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")'
+        'implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")',
+        'implementation("com.tom-roush:pdfbox-android:2.0.27.0")'
     ]
 
     needed_deps = []
@@ -175,6 +176,8 @@ import java.util.Locale
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 
 enum class QualityMode(val title: String, val desc: String) {
     ADAPTIVE("自适应", "优先无损直通，兼容高画质渲染（推荐）"),
@@ -423,7 +426,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("ℹ️ 关于 PDF2CBZ") },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v2.2.0-dsh (DSH Edition)", fontSize = 14.sp)
+                                    Text("• 版本：v3.0.0-dsh (DSH Edition · PdfBox 原生无损引擎)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -478,47 +481,72 @@ class MainActivity : ComponentActivity() {
         return name
     }
 
-    private fun extractRawJpegsFromPdf(pfd: FileDescriptor): List<ByteArray> {
-        val images = mutableListOf<ByteArray>()
-        val fingerprints = HashSet<Int>() // DSH: 已收录图片指纹，用于去重
-        try {
+    /**
+     * DSH v3.0 原生无损提取:按 PDF 结构逐页遍历图像对象(PdfBox),
+     * 每页取面积最大的非 mask 图像作为页面主图。
+     *
+     * - DCTDecode(JPEG):createRawInputStream 零解码直通,得到原始 JPEG 字节;
+     * - Flate/LZW/RLE 位图:解码为 Bitmap 后写无损 PNG;
+     * - JPX/JBIG2/CCITT、缺图页、异常:返回 null,由 PdfRenderer 渲染兜底。
+     *
+     * 返回 null 表示「不适合直通」,调用方必须走渲染路径 —— 宁可重编码也不漏页。
+     */
+    private fun extractNativePages(
+        pfd: FileDescriptor,
+        onLog: (String) -> Unit
+    ): List<Pair<String, ByteArray>>? {
+        val pages = mutableListOf<Pair<String, ByteArray>>()
+        return try {
             FileInputStream(pfd).use { fis ->
-                val bytes = fis.readBytes()
-                val len = bytes.size
-                var i = 0
-                val bFF = 0xFF.toByte()
-                val bD8 = 0xD8.toByte()
-                val bD9 = 0xD9.toByte()
+                PDDocument.load(fis).use { doc ->
+                    val pageCount = doc.numberOfPages
+                    for (i in 0 until pageCount) {
+                        val page = doc.getPage(i)
+                        val res = page.resources ?: return null
 
-                while (i < len - 3) {
-                    if (bytes[i] == bFF && bytes[i + 1] == bD8 && bytes[i + 2] == bFF) {
-                        val start = i
-                        var j = i + 2
-                        var end = -1
-                        while (j < len - 1) {
-                            if (bytes[j] == bFF && bytes[j + 1] == bD9) {
-                                end = j + 2
-                                break
+                        var best: PDImageXObject? = null
+                        var bestArea = 0
+                        for (name in res.xObjectNames) {
+                            val xo = try {
+                                res.getXObject(name)
+                            } catch (e: Exception) {
+                                null
                             }
-                            j++
+                            if (xo is PDImageXObject && !xo.isStencil) {
+                                val area = xo.width * xo.height
+                                if (area > bestArea) {
+                                    bestArea = area
+                                    best = xo
+                                }
+                            }
                         }
-                        // DSH: 阈值提到 12KB 滤掉缩略图/内嵌小图；同图多处引用按指纹去重
-                        if (end != -1 && (end - start) > 12288) {
-                            val img = bytes.copyOfRange(start, end)
-                            val head = CRC32().apply { update(img, 0, minOf(img.size, 4096)) }.value.toInt()
-                            if (fingerprints.add(img.size * 31 + head)) {
-                                images.add(img)
+
+                        val img = best ?: return null
+                        when (img.suffix) {
+                            "jpg" -> {
+                                // 零解码直通:原始 JPEG 字节直接进 CBZ
+                                val raw = img.cosObject.createRawInputStream().use { it.readBytes() }
+                                pages.add("jpg" to raw)
                             }
-                            i = end - 1
+                            "png" -> {
+                                // Flate/LZW/RLE 位图:解码后写无损 PNG
+                                val bmp = img.image
+                                val bos = ByteArrayOutputStream()
+                                bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+                                bmp.recycle()
+                                pages.add("png" to bos.toByteArray())
+                            }
+                            else -> return null
                         }
                     }
-                    i++
+                    onLog("已解析 $pageCount 页,全部命中可无损直通的图像编码")
                 }
             }
+            pages
         } catch (e: Exception) {
-            e.printStackTrace()
+            onLog("原生提取异常,回退渲染: ${e.localizedMessage}")
+            null
         }
-        return images
     }
 
     private fun writeZipStoredEntry(zipOut: ZipOutputStream, bytes: ByteArray, entryName: String) {
@@ -575,34 +603,23 @@ class MainActivity : ComponentActivity() {
             }
 
             try {
-                var rawJpegs: List<ByteArray> = emptyList()
+                var nativePages: List<Pair<String, ByteArray>>? = null
 
-                // 自适应模式尝试提取原始 JPEG
+                // v3.0 DSH: 自适应模式优先走「按 PDF 结构逐页原生无损提取」
                 if (currentQuality == QualityMode.ADAPTIVE) {
                     contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
-                        val extracted = extractRawJpegsFromPdf(pfd.fileDescriptor)
-                        // DSH: 直通要求「每页恰好一张图」。纯字节扫描无法证明图片与页面的对应关系，
-                        // 数量不符时坚决回退渲染，避免 CBZ 漏页 / 页序错乱。
-                        val pages = try {
-                            PdfRenderer(pfd).use { it.pageCount }
-                        } catch (_: Exception) {
-                            -1
-                        }
-                        if (extracted.isNotEmpty() && pages > 0 && extracted.size == pages) {
-                            rawJpegs = extracted
-                        } else if (extracted.isNotEmpty()) {
-                            logAndProgress("⚠ 直通校验未通过（扫描到 ${extracted.size} 张图 / 共 $pages 页），改用高清渲染")
-                        }
+                        nativePages = extractNativePages(pfd.fileDescriptor, logAndProgress)
                     }
                 }
 
-                if (rawJpegs.isNotEmpty()) {
-                    logAndProgress("⚡ [无损直通] 提取到 ${rawJpegs.size} 张原始 JPEG 图片...")
+                if (nativePages != null && nativePages!!.isNotEmpty()) {
+                    val extracted = nativePages!!
+                    logAndProgress("⚡ [原生无损] 逐页提取成功,共 ${extracted.size} 页原始图像")
                     contentResolver.openOutputStream(targetFile.uri)?.use { os ->
                         ZipOutputStream(os.buffered(256 * 1024)).use { zipOut ->
-                            rawJpegs.forEachIndexed { imgIdx, bytes ->
-                                val entryName = String.format("%04d.jpg", imgIdx + 1)
-                                writeZipStoredEntry(zipOut, bytes, entryName)
+                            extracted.forEachIndexed { imgIdx, pair ->
+                                val entryName = String.format("%04d.%s", imgIdx + 1, pair.first)
+                                writeZipStoredEntry(zipOut, pair.second, entryName)
                             }
                         }
                     }
@@ -679,8 +696,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "2.2.0-dsh"
-DSH_VERSION_CODE = 220
+DSH_VERSION_NAME = "3.0.0-dsh"
+DSH_VERSION_CODE = 300
 
 def patch_version():
     for r, _, fs in os.walk('.'):
