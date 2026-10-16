@@ -210,16 +210,53 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
+            // v3.1 DSH 修复闪退: 部分 ROM(联想 ZUI 等)会拒绝持久化目录权限并抛
+            // SecurityException。原实现未捕获 -> 选完目录点确定直接崩溃。
+            // 这里降级处理:持久化失败也不影响本次运行内读写该目录。
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: SecurityException) {
+                mainViewModel?.fullLogs?.add("[警告] 目录权限无法持久化(ROM 限制),本次运行内仍可使用: ${e.localizedMessage}")
+            } catch (e: Exception) {
+                mainViewModel?.fullLogs?.add("[警告] 保存输出目录时出错(已忽略): ${e.localizedMessage}")
+            }
             mainViewModel?.outputTree = uri
+        }
+    }
+
+    /** v3.1 DSH: 崩溃与关键事件落盘,重开 App 后仍能在日志里看到原因。 */
+    private fun crashLogFile() = java.io.File(filesDir, "pdf2cbz_log.txt")
+
+    private fun appendPersistentLog(text: String) {
+        try {
+            crashLogFile().appendText(text + "\n")
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** v3.1 DSH: 全局崩溃捕获 —— 闪退不再"无迹可寻"。 */
+    private fun installCrashHandler() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                appendPersistentLog(
+                    "[崩溃] ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}\n$sw"
+                )
+            } catch (_: Throwable) {
+            }
+            prev?.uncaughtException(t, e)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashHandler()
+        appendPersistentLog("[启动] PDF2CBZ v3.1.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
         setContent {
             val vm: MainViewModel = viewModel()
             mainViewModel = vm
@@ -366,6 +403,14 @@ class MainActivity : ComponentActivity() {
 
                     // --- 弹窗 1：日志 ---
                     if (showLogDialog) {
+                        // v3.1 DSH: 打开日志即自动带出落盘记录(含上次闪退的堆栈),不用再猜原因
+                        val diskLog by produceState(initialValue = "", showLogDialog) {
+                            value = try {
+                                crashLogFile().takeIf { it.exists() }?.readText()?.takeLast(12000) ?: ""
+                            } catch (_: Throwable) {
+                                ""
+                            }
+                        }
                         AlertDialog(
                             onDismissRequest = { showLogDialog = false },
                             title = { Text("📋 运行日志") },
@@ -374,6 +419,18 @@ class MainActivity : ComponentActivity() {
                                     LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
                                         items(vm.fullLogs) { line ->
                                             Text(line, fontSize = 12.sp, color = ComposeColor.LightGray)
+                                        }
+                                        if (diskLog.isNotBlank()) {
+                                            item {
+                                                Text(
+                                                    "—— 历史记录(含崩溃)——",
+                                                    fontSize = 12.sp,
+                                                    color = ComposeColor(0xFFFFAB40)
+                                                )
+                                            }
+                                            items(diskLog.split("\n")) { line ->
+                                                Text(line, fontSize = 11.sp, color = ComposeColor.Gray)
+                                            }
                                         }
                                     }
                                 }
@@ -426,7 +483,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("ℹ️ 关于 PDF2CBZ") },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.0.0-dsh (DSH Edition · PdfBox 原生无损引擎)", fontSize = 14.sp)
+                                    Text("• 版本：v3.1.0-dsh (DSH Edition · PdfBox 原生无损 + 崩溃日志)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -696,8 +753,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.0.0-dsh"
-DSH_VERSION_CODE = 300
+DSH_VERSION_NAME = "3.1.0-dsh"
+DSH_VERSION_CODE = 310
 
 def patch_version():
     for r, _, fs in os.walk('.'):
