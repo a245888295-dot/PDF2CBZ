@@ -855,12 +855,22 @@ class MainActivity : ComponentActivity() {
 
     /** 内容流里是否真的在画文字(BT/Tj/TJ) —— 解析失败就保守当有文字。 */
     private fun pageShowsText(page: PDPage): Boolean = try {
-        PDFStreamParser(page).parse().any { t ->
-            t is Operator && (
-                t.name == "BT" || t.name == "Tj" || t.name == "TJ" ||
-                    t.name == "'" || t.name == "\""
-                )
+        // 注意: 这版 PdfBox 的 parse() 返回 void, token 要用 getTokens() 取。
+        val parser = PDFStreamParser(page)
+        parser.parse()
+        var found = false
+        for (t in parser.tokens) {
+            if (t is Operator) {
+                val name = t.name
+                if (name == "BT" || name == "Tj" || name == "TJ" ||
+                    name == "'" || name == "\""
+                ) {
+                    found = true
+                    break
+                }
+            }
         }
+        found
     } catch (e: Exception) {
         true
     }
