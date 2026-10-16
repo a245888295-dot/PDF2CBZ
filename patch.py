@@ -423,7 +423,8 @@ class MainActivity : ComponentActivity() {
                             title = { Text("ℹ️ 关于 PDF2CBZ") },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 开发者：Gemini & a245888295-dot", fontSize = 14.sp)
+                                    Text("• 版本：v2.2.0-dsh (DSH Edition)", fontSize = 14.sp)
+                                    Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text("• 更新地址：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -479,6 +480,7 @@ class MainActivity : ComponentActivity() {
 
     private fun extractRawJpegsFromPdf(pfd: FileDescriptor): List<ByteArray> {
         val images = mutableListOf<ByteArray>()
+        val fingerprints = HashSet<Int>() // DSH: 已收录图片指纹，用于去重
         try {
             FileInputStream(pfd).use { fis ->
                 val bytes = fis.readBytes()
@@ -500,8 +502,13 @@ class MainActivity : ComponentActivity() {
                             }
                             j++
                         }
-                        if (end != -1 && (end - start) > 10000) {
-                            images.add(bytes.copyOfRange(start, end))
+                        // DSH: 阈值提到 12KB 滤掉缩略图/内嵌小图；同图多处引用按指纹去重
+                        if (end != -1 && (end - start) > 12288) {
+                            val img = bytes.copyOfRange(start, end)
+                            val head = CRC32().apply { update(img, 0, minOf(img.size, 4096)) }.value.toInt()
+                            if (fingerprints.add(img.size * 31 + head)) {
+                                images.add(img)
+                            }
                             i = end - 1
                         }
                     }
@@ -573,7 +580,19 @@ class MainActivity : ComponentActivity() {
                 // 自适应模式尝试提取原始 JPEG
                 if (currentQuality == QualityMode.ADAPTIVE) {
                     contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
-                        rawJpegs = extractRawJpegsFromPdf(pfd.fileDescriptor)
+                        val extracted = extractRawJpegsFromPdf(pfd.fileDescriptor)
+                        // DSH: 直通要求「每页恰好一张图」。纯字节扫描无法证明图片与页面的对应关系，
+                        // 数量不符时坚决回退渲染，避免 CBZ 漏页 / 页序错乱。
+                        val pages = try {
+                            PdfRenderer(pfd).use { it.pageCount }
+                        } catch (_: Exception) {
+                            -1
+                        }
+                        if (extracted.isNotEmpty() && pages > 0 && extracted.size == pages) {
+                            rawJpegs = extracted
+                        } else if (extracted.isNotEmpty()) {
+                            logAndProgress("⚠ 直通校验未通过（扫描到 ${extracted.size} 张图 / 共 $pages 页），改用高清渲染")
+                        }
                     }
                 }
 
@@ -658,3 +677,28 @@ class MainActivity : ComponentActivity() {
     print(f"✅ 全局代码已成功更新: {target_file}")
 
 update_main_activity()
+
+# 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
+DSH_VERSION_NAME = "2.2.0-dsh"
+DSH_VERSION_CODE = 220
+
+def patch_version():
+    for r, _, fs in os.walk('.'):
+        if 'app' not in r:
+            continue
+        for file in fs:
+            if file == 'build.gradle.kts':
+                fp = os.path.join(r, file)
+                try:
+                    with open(fp, 'r', encoding='utf-8') as f:
+                        c = f.read()
+                    c2 = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {DSH_VERSION_CODE}', c)
+                    c2 = re.sub(r'versionName\s*=\s*"[^"]*"', f'versionName = "{DSH_VERSION_NAME}"', c2)
+                    if c2 != c:
+                        with open(fp, 'w', encoding='utf-8') as f:
+                            f.write(c2)
+                        print(f"✅ 版本号已设为 {DSH_VERSION_NAME} ({DSH_VERSION_CODE}): {fp}")
+                except Exception as e:
+                    print(f"⚠ 设置版本号失败: {e}")
+
+patch_version()
