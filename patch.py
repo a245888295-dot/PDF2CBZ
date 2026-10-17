@@ -312,6 +312,7 @@ class MainActivity : ComponentActivity() {
         // v3.5 DSH: 用户在选择器里按返回/取消时 uris 为空。原实现无条件 clear(),
         // 于是「取消一次」就会把已选的 PDF 全部清空, 表现为两个入口互相干扰。
         // 这里空结果直接忽略, 不动已选列表。
+        appendPersistentLog("[选择] PDF 选择器返回 ${uris.size} 个: ${uris.map { getFileName(it) ?: it.toString() }}")
         if (uris.isNotEmpty()) mainViewModel?.let { vm ->
             vm.pdfs.clear()
             vm.pdfs.addAll(uris.filter { it.toString().isNotBlank() })
@@ -331,27 +332,35 @@ class MainActivity : ComponentActivity() {
     private val pickTree = registerForActivityResult(
         PickTreeContract()
     ) { uri ->
-        if (uri != null) {
-            // v3.1 DSH 修复闪退: 部分 ROM(联想 ZUI 等)会拒绝持久化目录权限并抛
-            // SecurityException。原实现未捕获 -> 选完目录点确定直接崩溃。
-            // 这里降级处理:持久化失败也不影响本次运行内读写该目录。
-            try {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: SecurityException) {
-                mainViewModel?.fullLogs?.add("[警告] 目录权限无法持久化(ROM 限制),本次运行内仍可使用: ${e.localizedMessage}")
-            } catch (e: Exception) {
-                mainViewModel?.fullLogs?.add("[警告] 保存输出目录时出错(已忽略): ${e.localizedMessage}")
-            }
-            mainViewModel?.outputTree = uri
-            lastOutputDir = uri
-            try {
-                prefs().edit().putString("last_out_dir", uri.toString()).apply()
-            } catch (_: Exception) {
-            }
+        appendPersistentLog("[选择] 输出目录选择器返回: ${uri ?: "取消(未改动)"}")
+        if (uri != null) applyOutputDir(uri)
+    }
+
+    /**
+     * v3.6 DSH: 输出目录的唯一应用入口。
+     * 「一键沿用上次目录」「最近用过的目录」和应用内选择都走这里,不再必须经过系统选择器。
+     */
+    private fun applyOutputDir(uri: Uri) {
+        // v3.1 DSH 修复闪退: 部分 ROM(联想 ZUI 等)会拒绝持久化目录权限并抛
+        // SecurityException。原实现未捕获 -> 选完目录点确定直接崩溃。
+        // 这里降级处理:持久化失败也不影响本次运行内读写该目录。
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: SecurityException) {
+            mainViewModel?.fullLogs?.add("[警告] 目录权限无法持久化(ROM 限制),本次运行内仍可使用: ${e.localizedMessage}")
+        } catch (e: Exception) {
+            mainViewModel?.fullLogs?.add("[警告] 保存输出目录时出错(已忽略): ${e.localizedMessage}")
         }
+        mainViewModel?.outputTree = uri
+        lastOutputDir = uri
+        try {
+            prefs().edit().putString("last_out_dir", uri.toString()).apply()
+        } catch (_: Exception) {
+        }
+        appendPersistentLog("[输出目录] 已应用: $uri")
     }
 
     /** v3.1 DSH: 崩溃与关键事件落盘,重开 App 后仍能在日志里看到原因。 */
@@ -383,7 +392,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
-        appendPersistentLog("[启动] PDF2CBZ v3.5.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        appendPersistentLog("[启动] PDF2CBZ v3.6.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
         // v3.3 DSH: 恢复上次的两个位置(各自独立)
         try {
             lastPdfUriOrDir = prefs().getString("last_pdf_uri", null)?.let { Uri.parse(it) }
@@ -434,6 +443,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     var showLogDialog by remember { mutableStateOf(false) }
+                    var showDirDialog by remember { mutableStateOf(false) }
                     var showSettingsDialog by remember { mutableStateOf(false) }
                     var showAboutDialog by remember { mutableStateOf(false) }
 
@@ -518,11 +528,12 @@ class MainActivity : ComponentActivity() {
                                 ?: "未设置 · 点击选择存储位置",
                             enabled = !vm.isProcessing
                         ) {
-                            vm.fullLogs.add(
-                                "[选择] 输出目录选择器,初始位置: " +
-                                    (lastOutputDir?.let { getFileName(it) ?: it.toString() } ?: "无")
-                            )
-                            pickTree.launch(lastOutputDir)
+                            // v3.6 DSH: 不再直接弹系统选择器。
+                            // 实测(10-17 17:29 的 logcat + DocumentsUI 的 lastAccess.db):
+                            // 本机 OPEN_DOCUMENT_TREE 会忽略 EXTRA_INITIAL_URI, 永远恢复
+                            // 「上一次访问过的目录」= 刚选过 PDF 的那个文件夹, 于是输出目录
+                            // 选择器被 PDF 目录带跑。改成就地给「一键沿用 / 最近目录」。
+                            showDirDialog = true
                         }
 
                         Spacer(modifier = Modifier.height(14.dp))
@@ -684,6 +695,67 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    // --- 弹窗：输出目录(v3.6：绕开 DocumentsUI 的位置记忆) ---
+                    if (showDirDialog) {
+                        val recentDirs: List<Uri> = try {
+                            contentResolver.persistedUriPermissions
+                                .filter { it.isWritePermission && it.uri.toString().contains("/tree/") }
+                                .map { it.uri }
+                                .distinct()
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        AlertDialog(
+                            onDismissRequest = { showDirDialog = false },
+                            title = { Text("输出目录", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Column(
+                                    modifier = Modifier
+                                        .heightIn(max = 320.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        "当前：" + (vm.outputTree?.let { getFileName(it) ?: it.toString() } ?: "未设置"),
+                                        fontSize = 13.sp
+                                    )
+                                    if (lastOutputDir != null) {
+                                        TextButton(onClick = {
+                                            applyOutputDir(lastOutputDir!!)
+                                            showDirDialog = false
+                                        }) { Text("一键沿用上次目录（不进选择器）", fontSize = 13.sp) }
+                                    }
+                                    if (recentDirs.isNotEmpty()) {
+                                        Text(
+                                            "最近用过的目录：",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 6.dp)
+                                        )
+                                        recentDirs.take(5).forEach { u ->
+                                            TextButton(onClick = {
+                                                applyOutputDir(u)
+                                                showDirDialog = false
+                                            }) { Text(getFileName(u) ?: u.toString(), fontSize = 13.sp) }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showDirDialog = false
+                                    appendPersistentLog(
+                                        "[选择] 打开系统目录选择器,anchor=" + (lastOutputDir?.toString() ?: "null")
+                                    )
+                                    pickTree.launch(lastOutputDir)
+                                }) { Text("选择其它目录…") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showDirDialog = false }) { Text("取消") }
+                            }
+                        )
+                    }
+
                     // --- 弹窗 2：设置 ---
                     if (showSettingsDialog) {
                         AlertDialog(
@@ -726,7 +798,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("关于 PDF2CBZ", fontWeight = FontWeight.SemiBold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.5.0-dsh (DSH Edition · 输入/输出选择器彻底解绑 + 取消不再清空已选)", fontSize = 14.sp)
+                                    Text("• 版本：v3.6.0-dsh (DSH Edition · 输出目录一键沿用/最近目录, 不再被 PDF 选择器带跑)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -1192,8 +1264,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.5.0-dsh"
-DSH_VERSION_CODE = 350
+DSH_VERSION_NAME = "3.6.0-dsh"
+DSH_VERSION_CODE = 360
 
 def patch_version():
     for r, _, fs in os.walk('.'):
