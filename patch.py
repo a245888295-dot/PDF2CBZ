@@ -224,9 +224,13 @@ private class PickPdfsContract : ActivityResultContract<Uri?, List<Uri>>() {
             type = "application/pdf"
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf"))
-            if (input != null) {
+            if (input != null && input.scheme == "content") {
                 // 传上次选中的 PDF 文件 URI,选择器会定位到它所在目录并选中它
-                putExtra("android.provider.extra.INITIAL_URI", input)
+                // v3.5 DSH: 只接受 content:// 文档 URI, 非 content(或误传的 tree URI)一律不传,
+                // 避免部分 ROM 的 DocumentsUI 解析失败后又退回全局上次位置。
+                if (!input.toString().contains("/tree/")) {
+                    putExtra("android.provider.extra.INITIAL_URI", input)
+                }
             }
         }
     }
@@ -242,6 +246,59 @@ private class PickPdfsContract : ActivityResultContract<Uri?, List<Uri>>() {
     }
 }
 
+/**
+ * v3.5 DSH: 自定义「选择输出目录」契约。
+ *
+ * 标准 ActivityResultContracts.OpenDocumentTree 的 createIntent 实现是
+ * `Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)`, 把传进来的 input 直接丢掉,
+ * 于是 pickTree.launch(lastOutputDir) 等于什么都没传 —— 输出目录选择器
+ * 永远跟随系统 DocumentsUI 的「全局上次位置」, 而那个位置通常就是刚选完
+ * PDF 停留的目录。这就是「选 PDF」和「选输出目录」绑在一起、互相干扰的根因。
+ *
+ * 这里自己实现, 显式把上次的输出目录(没有历史时退回下载目录)作为 INITIAL_URI 传入。
+ */
+private class PickTreeContract : ActivityResultContract<Uri?, Uri?>() {
+
+    override fun createIntent(context: Context, input: Uri?): Intent {
+        return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
+            val anchor = if (input != null &&
+                input.scheme == "content" &&
+                input.toString().contains("/tree/")
+            ) {
+                input
+            } else {
+                defaultDownloadsTree()
+            }
+            if (anchor != null) {
+                putExtra("android.provider.extra.INITIAL_URI", anchor)
+            }
+        }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+        if (resultCode != android.app.Activity.RESULT_OK) return null
+        return intent?.data
+    }
+
+    /** 首次使用时没有历史输出目录: 退回「下载」目录, 避免又跟随 DocumentsUI 的上次位置。 */
+    private fun defaultDownloadsTree(): Uri? {
+        return try {
+            android.provider.DocumentsContract.buildTreeDocumentUri(
+                "com.android.externalstorage.documents",
+                "primary:Download"
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private var mainViewModel: MainViewModel? = null
 
@@ -252,7 +309,10 @@ class MainActivity : ComponentActivity() {
     private fun prefs() = getSharedPreferences("pdf2cbz_dsh", Context.MODE_PRIVATE)
 
     private val pickPdfs = registerForActivityResult(PickPdfsContract()) { uris ->
-        mainViewModel?.let { vm ->
+        // v3.5 DSH: 用户在选择器里按返回/取消时 uris 为空。原实现无条件 clear(),
+        // 于是「取消一次」就会把已选的 PDF 全部清空, 表现为两个入口互相干扰。
+        // 这里空结果直接忽略, 不动已选列表。
+        if (uris.isNotEmpty()) mainViewModel?.let { vm ->
             vm.pdfs.clear()
             vm.pdfs.addAll(uris.filter { it.toString().isNotBlank() })
             // 记住本次选中的 PDF 文件(下次选择器定点到它所在目录,不跟随输出目录)
@@ -266,8 +326,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // v3.5 DSH: 改用自定义契约。原写法 ActivityResultContracts.OpenDocumentTree()
+    // 会丢弃 launch() 传进来的初始位置, 这才是「两个选择器互相带跑」的真正原因。
     private val pickTree = registerForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
+        PickTreeContract()
     ) { uri ->
         if (uri != null) {
             // v3.1 DSH 修复闪退: 部分 ROM(联想 ZUI 等)会拒绝持久化目录权限并抛
@@ -321,7 +383,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
-        appendPersistentLog("[启动] PDF2CBZ v3.4.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        appendPersistentLog("[启动] PDF2CBZ v3.5.0-dsh  ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
         // v3.3 DSH: 恢复上次的两个位置(各自独立)
         try {
             lastPdfUriOrDir = prefs().getString("last_pdf_uri", null)?.let { Uri.parse(it) }
@@ -664,7 +726,7 @@ class MainActivity : ComponentActivity() {
                             title = { Text("关于 PDF2CBZ", fontWeight = FontWeight.SemiBold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.4.0-dsh (DSH Edition · 修复 CBZ 内图片损坏 + 输入/输出位置各自独立记忆)", fontSize = 14.sp)
+                                    Text("• 版本：v3.5.0-dsh (DSH Edition · 输入/输出选择器彻底解绑 + 取消不再清空已选)", fontSize = 14.sp)
                                     Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
                                     Text("• 联系方式：待定", fontSize = 14.sp)
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -1130,8 +1192,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.4.0-dsh"
-DSH_VERSION_CODE = 340
+DSH_VERSION_NAME = "3.5.0-dsh"
+DSH_VERSION_CODE = 350
 
 def patch_version():
     for r, _, fs in os.walk('.'):
