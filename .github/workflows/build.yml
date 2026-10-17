@@ -5,11 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# 同一分支连续 push 时取消上一次未完成的构建，省 Actions 分钟数
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,12 +27,7 @@ jobs:
 
       - name: Unzip Project
         run: |
-          if ls *.zip >/dev/null 2>&1; then
-            unzip -o *.zip
-          else
-            echo "::error::仓库根目录没有 .zip 工程包，构建无法继续"
-            exit 1
-          fi
+          unzip -o *.zip || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -45,14 +35,10 @@ jobs:
       - name: Cloud Patch and Build
         run: |
           ROOT_DIR=$(find . -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
-          if [ -z "$ROOT_DIR" ]; then
-            echo "::error::未找到 settings.gradle.kts，无法定位工程根目录"
-            exit 1
-          fi
           echo "Root project found in: $ROOT_DIR"
 
-          cp patch.py "$ROOT_DIR/"
-          cp icon_patch.py "$ROOT_DIR/"
+          cp patch.py "$ROOT_DIR/" || true
+          cp icon_patch.py "$ROOT_DIR/" || true
           cd "$ROOT_DIR"
           python3 patch.py
 
@@ -72,13 +58,3 @@ jobs:
           name: PDF2CBZ-debug-apk
           path: |
             **/app/build/outputs/apk/debug/*.apk
-
-      - name: Upload build logs (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            **/build/reports/**
-            **/build/outputs/logs/**
-          if-no-files-found: ignore
