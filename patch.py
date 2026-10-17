@@ -318,12 +318,14 @@ enum class QualityMode(val title: String, val desc: String) {
 }
 
 /** v3.7 DSH: 页面栈 —— 设置/日志/关于改成独立页面,不再用弹窗堆在首页 */
-enum class AppScreen { HOME, SETTINGS, LOG, ABOUT }
+enum class AppScreen { HOME, SETTINGS, QUALITY, LOG, ABOUT }
 
 class MainViewModel : ViewModel() {
     val pdfs = mutableStateListOf<Uri>()
     var outputTree by mutableStateOf<Uri?>(null)
     var log by mutableStateOf("等待操作…")
+    /** v3.8 DSH: 命令行式滚动区 —— 进度逐行追加, 旧行留在上面 */
+    val console = mutableStateListOf<String>()
     var isProcessing by mutableStateOf(false)
     var qualityMode by mutableStateOf(QualityMode.ADAPTIVE)
     val fullLogs = mutableStateListOf<String>()
@@ -564,7 +566,9 @@ class MainActivity : ComponentActivity() {
                     var screen by remember { mutableStateOf(AppScreen.HOME) }
 
                     // v3.7 DSH: 子页面里按返回键回首页,不直接退出 App
-                    BackHandler(enabled = screen != AppScreen.HOME) { screen = AppScreen.HOME }
+                    BackHandler(enabled = screen != AppScreen.HOME) {
+                        screen = if (screen == AppScreen.QUALITY) AppScreen.SETTINGS else AppScreen.HOME
+                    }
 
                     if (screen == AppScreen.HOME) Column(
                         modifier = Modifier
@@ -600,7 +604,6 @@ class MainActivity : ComponentActivity() {
                         // ── 步骤 1：选择 PDF ─────────────────────────────
                         SourceCard(
                             icon = Icons.Outlined.PictureAsPdf,
-                            step = "1",
                             title = if (vm.pdfs.isEmpty()) "选择 PDF 文件" else "已选 ${vm.pdfs.size} 个 PDF",
                             subtitle = if (vm.pdfs.isEmpty()) "可多选" else "点击重新选择",
                             enabled = !vm.isProcessing
@@ -614,29 +617,11 @@ class MainActivity : ComponentActivity() {
                             pickPdfs.launch(lastPdfUriOrDir)
                         }
 
-                        if (vm.pdfs.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                vm.pdfs.take(3).forEach { u ->
-                                    SelectedFileRow(getFileName(u) ?: u.toString())
-                                }
-                                if (vm.pdfs.size > 3) {
-                                    Text(
-                                        text = "…另外 ${vm.pdfs.size - 3} 个文件",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(start = 42.dp)
-                                    )
-                                }
-                            }
-                        }
-
                         Spacer(modifier = Modifier.height(14.dp))
 
                         // ── 步骤 2：输出目录 ─────────────────────────────
                         SourceCard(
                             icon = Icons.Outlined.FolderOpen,
-                            step = "2",
                             title = "输出目录",
                             subtitle = vm.outputTree?.let { getFileName(it) ?: it.toString() }
                                 ?: "未设置 · 点击选择存储位置",
@@ -653,37 +638,58 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(14.dp))
 
 
-                        Spacer(modifier = Modifier.weight(1f))
+                        Spacer(modifier = Modifier.height(14.dp))
 
-                        // ── 中间靠下的进度区(v3.7) ──────────────────────
+                        // ── 状态 / 进度：命令行式滚动区(v3.8) ─────────────
+                        val consoleScroll = rememberScrollState()
+                        LaunchedEffect(vm.console.size, vm.pdfs.size, vm.isProcessing) {
+                            consoleScroll.animateScrollTo(consoleScroll.maxValue)
+                        }
                         Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .verticalScroll(consoleScroll)
                         ) {
-                            if (vm.isProcessing) {
-                                LinearProgressIndicator(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 10.dp)
+                            if (vm.pdfs.isNotEmpty()) {
+                                Text(
+                                    text = "已选 ${vm.pdfs.size} 个 PDF",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                vm.pdfs.forEach { u ->
+                                    Text(
+                                        text = "  " + (getFileName(u) ?: u.toString()),
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                            vm.console.forEach { line ->
+                                Text(
+                                    text = line,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Text(
-                                text = vm.log,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                            )
+                            if (vm.console.isEmpty() && vm.pdfs.isEmpty()) {
+                                Text(
+                                    text = "等待操作…",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.height(18.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
                         // ── 主按钮 ─────────────────────────────────────
                         Button(
                             onClick = {
+                                vm.console.clear()
                                 vm.isProcessing = true
                                 scope.launch(Dispatchers.IO) {
                                     convertPdfsToCbz(
@@ -692,7 +698,7 @@ class MainActivity : ComponentActivity() {
                                             scope.launch(Dispatchers.Main) { vm.fullLogs.add(entry) }
                                         },
                                         onProgress = { status ->
-                                            scope.launch(Dispatchers.Main) { vm.log = status }
+                                            scope.launch(Dispatchers.Main) { vm.console.add(status) }
                                         }
                                     )
                                     vm.isProcessing = false
@@ -720,6 +726,15 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         Spacer(modifier = Modifier.height(18.dp))
+                    }
+
+                    // --- 页面：画质与清晰度(v3.8 与其它设置条目一致) ---
+                    if (screen == AppScreen.QUALITY) {
+                        QualityPage(
+                            qualityMode = vm.qualityMode,
+                            onQualityChange = { vm.qualityMode = it },
+                            onBack = { screen = AppScreen.SETTINGS }
+                        )
                     }
 
                     // --- 页面：运行日志(v3.7 弹窗 -> 独立页) ---
@@ -831,7 +846,7 @@ class MainActivity : ComponentActivity() {
                     if (screen == AppScreen.SETTINGS) {
                         SettingsPage(
                             qualityMode = vm.qualityMode,
-                            onQualityChange = { vm.qualityMode = it },
+                            onOpenQuality = { screen = AppScreen.QUALITY },
                             onOpenLog = { screen = AppScreen.LOG },
                             onOpenAbout = { screen = AppScreen.ABOUT },
                             onBack = { screen = AppScreen.HOME }
@@ -912,7 +927,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SettingsPage(
         qualityMode: QualityMode,
-        onQualityChange: (QualityMode) -> Unit,
+        onOpenQuality: () -> Unit,
         onOpenLog: () -> Unit,
         onOpenAbout: () -> Unit,
         onBack: () -> Unit
@@ -929,20 +944,56 @@ class MainActivity : ComponentActivity() {
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(
-                    text = "画质与清晰度",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 8.dp)
+                SettingsEntry(
+                    icon = Icons.Outlined.Image,
+                    title = "画质与清晰度",
+                    subtitle = qualityMode.title,
+                    onClick = onOpenQuality
                 )
+                Spacer(modifier = Modifier.height(10.dp))
+                SettingsEntry(
+                    icon = Icons.Outlined.Description,
+                    title = "运行日志",
+                    subtitle = "本次与历史记录(含崩溃堆栈)",
+                    onClick = onOpenLog
+                )
+                SettingsEntry(
+                    icon = Icons.Outlined.Info,
+                    title = "关于",
+                    subtitle = "版本信息与更新地址",
+                    onClick = onOpenAbout
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+        }
+    }
+
+    /** v3.8 DSH: 画质选择页(从设置条目进入) */
+    @Composable
+    private fun QualityPage(
+        qualityMode: QualityMode,
+        onQualityChange: (QualityMode) -> Unit,
+        onBack: () -> Unit
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp)
+        ) {
+            PageHeader("画质与清晰度", onBack)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 QualityMode.values().forEach { mode ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onQualityChange(mode) }
-                            .padding(vertical = 6.dp, horizontal = 4.dp)
+                            .padding(vertical = 8.dp, horizontal = 4.dp)
                     ) {
                         RadioButton(
                             selected = (qualityMode == mode),
@@ -959,20 +1010,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(18.dp))
-                SettingsEntry(
-                    icon = Icons.Outlined.Description,
-                    title = "运行日志",
-                    subtitle = "本次与历史记录(含崩溃堆栈)",
-                    onClick = onOpenLog
-                )
-                SettingsEntry(
-                    icon = Icons.Outlined.Info,
-                    title = "关于",
-                    subtitle = "版本信息与更新地址",
-                    onClick = onOpenAbout
-                )
-                Spacer(modifier = Modifier.height(18.dp))
             }
         }
     }
@@ -1036,9 +1073,9 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("版本", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("v3.7.1-dsh", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("v3.8.0-dsh", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "首页只保留 选择文件 / 输出目录 / 进度 / 开始;设置改为独立页面,日志与关于收进设置。",
+                    "首页只保留 选择文件 / 输出目录 / 滚动状态区 / 开始;设置与画质都改成独立页面。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1064,7 +1101,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SourceCard(
         icon: ImageVector,
-        step: String,
         title: String,
         subtitle: String,
         enabled: Boolean,
@@ -1117,12 +1153,6 @@ class MainActivity : ComponentActivity() {
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Text(
-                    text = step,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
             }
         }
     }
@@ -1502,8 +1532,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.7.1-dsh"
-DSH_VERSION_CODE = 371
+DSH_VERSION_NAME = "3.8.0-dsh"
+DSH_VERSION_CODE = 380
 
 def patch_version():
     for r, _, fs in os.walk('.'):
