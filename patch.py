@@ -146,6 +146,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
@@ -172,6 +173,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -201,6 +203,9 @@ enum class QualityMode(val title: String, val desc: String) {
     NATIVE("原生", "强制最高清晰度渲染（体积较大）"),
     LOW("低画质", "降低分辨率与质量，大幅减小体积")
 }
+
+/** v3.7 DSH: 页面栈 —— 设置/日志/关于改成独立页面,不再用弹窗堆在首页 */
+enum class AppScreen { HOME, SETTINGS, LOG, ABOUT }
 
 class MainViewModel : ViewModel() {
     val pdfs = mutableStateListOf<Uri>()
@@ -442,12 +447,13 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    var showLogDialog by remember { mutableStateOf(false) }
                     var showDirDialog by remember { mutableStateOf(false) }
-                    var showSettingsDialog by remember { mutableStateOf(false) }
-                    var showAboutDialog by remember { mutableStateOf(false) }
+                    var screen by remember { mutableStateOf(AppScreen.HOME) }
 
-                    Column(
+                    // v3.7 DSH: 子页面里按返回键回首页,不直接退出 App
+                    BackHandler(enabled = screen != AppScreen.HOME) { screen = AppScreen.HOME }
+
+                    if (screen == AppScreen.HOME) Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(horizontal = 18.dp)
@@ -472,14 +478,9 @@ class MainActivity : ComponentActivity() {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            IconButton(onClick = { showLogDialog = true }) {
-                                Icon(Icons.Outlined.Description, contentDescription = "日志")
-                            }
-                            IconButton(onClick = { showSettingsDialog = true }) {
+                            // v3.7 DSH: 首页只留一个入口,日志/关于都收进设置页
+                            IconButton(onClick = { screen = AppScreen.SETTINGS }) {
                                 Icon(Icons.Outlined.Tune, contentDescription = "设置")
-                            }
-                            IconButton(onClick = { showAboutDialog = true }) {
-                                Icon(Icons.Outlined.Info, contentDescription = "关于")
                             }
                         }
 
@@ -538,49 +539,34 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // ── 步骤 3：画质模式 ─────────────────────────────
-                        Text(
-                            text = "画质模式",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            QualityMode.values().forEach { mode ->
-                                FilterChip(
-                                    selected = vm.qualityMode == mode,
-                                    onClick = { vm.qualityMode = mode },
-                                    enabled = !vm.isProcessing,
-                                    label = { Text(mode.title, fontSize = 13.sp) }
-                                )
-                            }
-                        }
-                        Text(
-                            text = vm.qualityMode.desc,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp, top = 8.dp)
-                        )
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // ── 状态与进度 ──────────────────────────────────
-                        if (vm.isProcessing) {
-                            LinearProgressIndicator(
+                        // ── 中间靠下的进度区(v3.7) ──────────────────────
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (vm.isProcessing) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 10.dp)
+                                )
+                            }
+                            Text(
+                                text = vm.log,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(bottom = 10.dp)
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
                             )
                         }
-                        Text(
-                            text = vm.log,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
-                        )
+                        Spacer(modifier = Modifier.height(18.dp))
 
                         // ── 主按钮 ─────────────────────────────────────
                         Button(
@@ -623,19 +609,15 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(18.dp))
                     }
 
-                    // --- 弹窗 1：日志 ---
-                    if (showLogDialog) {
-                        // v3.1 DSH: 打开日志即自动带出落盘记录(含上次闪退的堆栈),不用再猜原因
-                        val diskLog by produceState(initialValue = "", showLogDialog) {
+                    // --- 页面：运行日志(v3.7 弹窗 -> 独立页) ---
+                    if (screen == AppScreen.LOG) {
+                        val diskLog by produceState(initialValue = "", screen) {
                             value = try {
                                 crashLogFile().takeIf { it.exists() }?.readText()?.takeLast(12000) ?: ""
                             } catch (_: Throwable) {
                                 ""
                             }
                         }
-                        // v3.2 DSH 修复闪退②: 原实现用 SelectionContainer 包 LazyColumn,
-                        // 长按拖选文本时 Compose 选区管理器算方向越界 -> 崩溃(用户"复制日志就崩")。
-                        // 现在改成单个可滚动文本块 + 一键复制/导出,不再需要手动拖选。
                         val fullLogText = buildString {
                             appendLine("=== 本次运行日志 ===")
                             if (vm.fullLogs.isEmpty()) appendLine("(暂无)") else vm.fullLogs.forEach { appendLine(it) }
@@ -645,53 +627,29 @@ class MainActivity : ComponentActivity() {
                                 append(diskLog)
                             }
                         }
-                        AlertDialog(
-                            onDismissRequest = { showLogDialog = false },
-                            title = { Text("运行日志", fontWeight = FontWeight.SemiBold) },
-                            text = {
-                                Column(
-                                    modifier = Modifier
-                                        .heightIn(max = 320.dp)
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                    Text(
-                                        text = fullLogText,
-                                        fontSize = 11.sp,
-                                        color = ComposeColor.LightGray
-                                    )
+                        LogPage(
+                            fullLogText = fullLogText,
+                            onCopy = {
+                                try {
+                                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("PDF2CBZ 日志", fullLogText))
+                                    vm.log = "日志已复制到剪贴板"
+                                } catch (e: Exception) {
+                                    vm.log = "复制失败: ${e.localizedMessage}"
                                 }
                             },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    // 一键复制全部日志
-                                    try {
-                                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        cm.setPrimaryClip(ClipData.newPlainText("PDF2CBZ 日志", fullLogText))
-                                        vm.log = "日志已复制到剪贴板"
-                                    } catch (e: Exception) {
-                                        vm.log = "复制失败: ${e.localizedMessage}"
-                                    }
-                                    showLogDialog = false
-                                }) { Text("复制全部") }
-                            },
-                            dismissButton = {
-                                Row {
-                                    TextButton(onClick = {
-                                        // 一键导出为文件(应用外部私有目录,文件管理器可访问)
-                                        try {
-                                            val dir = getExternalFilesDir(null)
-                                            val f = java.io.File(dir, "pdf2cbz_log_export.txt")
-                                            f.writeText(fullLogText)
-                                            vm.log = "已导出: ${f.absolutePath}"
-                                            appendPersistentLog("[导出] 日志已导出到 ${f.absolutePath}")
-                                        } catch (e: Exception) {
-                                            vm.log = "导出失败: ${e.localizedMessage}"
-                                        }
-                                        showLogDialog = false
-                                    }) { Text("导出文件") }
-                                    TextButton(onClick = { showLogDialog = false }) { Text("关闭") }
+                            onExport = {
+                                try {
+                                    val dir = getExternalFilesDir(null)
+                                    val f = java.io.File(dir, "pdf2cbz_log_export.txt")
+                                    f.writeText(fullLogText)
+                                    vm.log = "已导出: ${f.absolutePath}"
+                                    appendPersistentLog("[导出] 日志已导出到 ${f.absolutePath}")
+                                } catch (e: Exception) {
+                                    vm.log = "导出失败: ${e.localizedMessage}"
                                 }
-                            }
+                            },
+                            onBack = { screen = AppScreen.SETTINGS }
                         )
                     }
 
@@ -756,67 +714,234 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // --- 弹窗 2：设置 ---
-                    if (showSettingsDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showSettingsDialog = false },
-                            title = { Text("设置", fontWeight = FontWeight.SemiBold) },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text("画质与清晰度选项：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                                    QualityMode.values().forEach { mode ->
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable { vm.qualityMode = mode }
-                                                .padding(vertical = 4.dp)
-                                        ) {
-                                            RadioButton(
-                                                selected = (vm.qualityMode == mode),
-                                                onClick = { vm.qualityMode = mode }
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Column {
-                                                Text(mode.title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                                                Text(mode.desc, fontSize = 11.sp, color = ComposeColor.Gray)
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = { showSettingsDialog = false }) { Text("确定") }
-                            }
+                    // --- 页面：设置(v3.7 独立页,选项集中在这里) ---
+                    if (screen == AppScreen.SETTINGS) {
+                        SettingsPage(
+                            qualityMode = vm.qualityMode,
+                            onQualityChange = { vm.qualityMode = it },
+                            onOpenLog = { screen = AppScreen.LOG },
+                            onOpenAbout = { screen = AppScreen.ABOUT },
+                            onBack = { screen = AppScreen.HOME }
                         )
                     }
 
-                    // --- 弹窗 3：关于 ---
-                    if (showAboutDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showAboutDialog = false },
-                            title = { Text("关于 PDF2CBZ", fontWeight = FontWeight.SemiBold) },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("• 版本：v3.6.0-dsh (DSH Edition · 输出目录一键沿用/最近目录, 不再被 PDF 选择器带跑)", fontSize = 14.sp)
-                                    Text("• 开发者：Gemini & a245888295-dot & DSH", fontSize = 14.sp)
-                                    Text("• 联系方式：待定", fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text("• 更新地址：", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                                    SelectionContainer {
-                                        Text(
-                                            text = "https://github.com/a245888295-dot/PDF2CBZ/actions",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = { showAboutDialog = false }) { Text("关闭") }
-                            }
-                        )
+                    // --- 页面：关于(v3.7 独立页,版本说明不再挤在版本号后面) ---
+                    if (screen == AppScreen.ABOUT) {
+                        AboutPage(onBack = { screen = AppScreen.SETTINGS })
                     }
+                }
+            }
+        }
+    }
+
+    /** v3.7 DSH: 子页面通用头部(返回 + 标题) */
+    @Composable
+    private fun PageHeader(title: String, onBack: () -> Unit) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 14.dp, bottom = 10.dp)
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Outlined.ChevronLeft, contentDescription = "返回")
+            }
+            Text(
+                text = title,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(start = 2.dp)
+            )
+        }
+    }
+
+    /** v3.7 DSH: 设置页里的可点条目 */
+    @Composable
+    private fun SettingsEntry(
+        icon: ImageVector,
+        title: String,
+        subtitle: String,
+        onClick: () -> Unit
+    ) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clickable(onClick = onClick)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Icon(icon, contentDescription = null)
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        subtitle,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null)
+            }
+        }
+    }
+
+    /** v3.7 DSH: 设置页 —— 画质选项 + 日志 / 关于入口 */
+    @Composable
+    private fun SettingsPage(
+        qualityMode: QualityMode,
+        onQualityChange: (QualityMode) -> Unit,
+        onOpenLog: () -> Unit,
+        onOpenAbout: () -> Unit,
+        onBack: () -> Unit
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp)
+        ) {
+            PageHeader("设置", onBack)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "画质与清晰度",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 8.dp)
+                )
+                QualityMode.values().forEach { mode ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onQualityChange(mode) }
+                            .padding(vertical = 6.dp, horizontal = 4.dp)
+                    ) {
+                        RadioButton(
+                            selected = (qualityMode == mode),
+                            onClick = { onQualityChange(mode) }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(mode.title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text(
+                                mode.desc,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(18.dp))
+                SettingsEntry(
+                    icon = Icons.Outlined.Description,
+                    title = "运行日志",
+                    subtitle = "本次与历史记录(含崩溃堆栈)",
+                    onClick = onOpenLog
+                )
+                SettingsEntry(
+                    icon = Icons.Outlined.Info,
+                    title = "关于",
+                    subtitle = "版本信息与更新地址",
+                    onClick = onOpenAbout
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+        }
+    }
+
+    /** v3.7 DSH: 日志页 */
+    @Composable
+    private fun LogPage(
+        fullLogText: String,
+        onCopy: () -> Unit,
+        onExport: () -> Unit,
+        onBack: () -> Unit
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp)
+        ) {
+            PageHeader("运行日志", onBack)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = fullLogText,
+                    fontSize = 11.sp,
+                    color = ComposeColor.LightGray
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+            ) {
+                OutlinedButton(onClick = onCopy, modifier = Modifier.weight(1f)) {
+                    Text("复制全部")
+                }
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                    Text("导出文件")
+                }
+            }
+        }
+    }
+
+    /** v3.7 DSH: 关于页 */
+    @Composable
+    private fun AboutPage(onBack: () -> Unit) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp)
+        ) {
+            PageHeader("关于 PDF2CBZ", onBack)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("版本", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("v3.7.0-dsh", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "首页只保留 选择文件 / 输出目录 / 进度 / 开始;设置改为独立页面,日志与关于收进设置。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("开发者", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Gemini & a245888295-dot & DSH", fontSize = 14.sp)
+                Text("联系方式", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("待定", fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("更新地址", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SelectionContainer {
+                    Text(
+                        text = "https://github.com/a245888295-dot/PDF2CBZ/actions",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
@@ -1264,8 +1389,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.6.0-dsh"
-DSH_VERSION_CODE = 360
+DSH_VERSION_NAME = "3.7.0-dsh"
+DSH_VERSION_CODE = 370
 
 def patch_version():
     for r, _, fs in os.walk('.'):
