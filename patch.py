@@ -1,5 +1,116 @@
 import os
 import re
+import base64
+
+# ============================================================
+# v3.7.1 DSH: 固定签名
+# 根因: CI 跑 assembleDebug, debug 包用 runner 上临时生成的
+# ~/.android/debug.keystore —— runner 一换就换证书, 于是
+# 「同包名不同签名」, 覆盖安装必然失败, 只能卸载重装(数据全清)。
+# 这里把一张固定证书内嵌进补丁, 所有构建共用, 从此可覆盖升级。
+# 证书 sha256: 09:47:74:0F:35:D1:CF:C7:EB:56:BA:FD:28:12:5A:42:
+#              1C:ED:43:6E:9F:01:B4:BB:BC:3A:86:41:47:BE:11:49
+# 有效期至 2056-10-09
+# ============================================================
+SIGNING_P12_B64 = (
+    "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"
+)
+SIGNING_STORE_PASS = "pdf2cbz-dsh"
+SIGNING_KEY_ALIAS = "pdf2cbz"
+SIGNING_KEY_PASS = "pdf2cbz-dsh"
+
+
+def ensure_signing_keystore():
+    os.makedirs('signing', exist_ok=True)
+    path = os.path.join('signing', 'pdf2cbz.p12')
+    data = base64.b64decode(SIGNING_P12_B64)
+    with open(path, 'wb') as f:
+        f.write(data)
+    print("固定签名 keystore 已就位: %s (%d 字节)" % (path, len(data)))
+    return path
+
+
+def patch_signing_config():
+    gradle_path = None
+    for root, dirs, files in os.walk('.'):
+        if 'build.gradle.kts' in files and 'app' in root:
+            gradle_path = os.path.join(root, 'build.gradle.kts')
+            break
+    if not gradle_path:
+        print("未找到 app/build.gradle.kts, 跳过签名配置")
+        return
+    with open(gradle_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if 'fixedDebug' in content:
+        print("固定签名配置已存在, 跳过")
+        return
+    block = """
+
+// v3.7.1 DSH: 固定签名 —— 所有构建共用一张证书, 覆盖安装不再冲突
+android {
+    signingConfigs {
+        create("fixedDebug") {
+            storeFile = rootProject.file("signing/pdf2cbz.p12")
+            storePassword = "pdf2cbz-dsh"
+            keyAlias = "pdf2cbz"
+            keyPassword = "pdf2cbz-dsh"
+        }
+    }
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("fixedDebug")
+        }
+    }
+}
+"""
+    content += block
+    with open(gradle_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    print("已注入固定签名配置: %s" % gradle_path)
+
 
 print("🚀 正在全局重组 PDF2CBZ（Clash 极简卡片 UI + 画质切换 + ViewModel 状态持久化）...")
 
@@ -122,6 +233,8 @@ def patch_build_gradle():
     print(f"✅ 已成功修复并更新 Gradle 配置: {gradle_path}")
 
 patch_build_gradle()
+ensure_signing_keystore()
+patch_signing_config()
 
 # 5. 重构 MainActivity.kt 为 Clash 卡片 UI + 画质选择 + 关于/设置页面
 def update_main_activity():
@@ -923,7 +1036,7 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("版本", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("v3.7.0-dsh", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("v3.7.1-dsh", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text(
                     "首页只保留 选择文件 / 输出目录 / 进度 / 开始;设置改为独立页面,日志与关于收进设置。",
                     fontSize = 12.sp,
@@ -1389,8 +1502,8 @@ class MainActivity : ComponentActivity() {
 update_main_activity()
 
 # 7. DSH: 统一版本号（zip 里写死 2.0.0，README 说 2.1.0，这里以补丁为准）
-DSH_VERSION_NAME = "3.7.0-dsh"
-DSH_VERSION_CODE = 370
+DSH_VERSION_NAME = "3.7.1-dsh"
+DSH_VERSION_CODE = 371
 
 def patch_version():
     for r, _, fs in os.walk('.'):
